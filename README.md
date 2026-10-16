@@ -1,6 +1,5 @@
 # King Cat feeder
 
-[![ci](https://github.com/maxeq/king-cat-feeder/actions/workflows/ci.yml/badge.svg)](https://github.com/maxeq/king-cat-feeder/actions/workflows/ci.yml)
 
 Firmware for a cat feeder that is meant to recognise one cat by its face, without a collar or RFID tag:
 only that cat gets the door opened, the kibble is dosed by weight, and the scale tracks what was eaten.
@@ -99,7 +98,7 @@ Every log line goes through one module (`src/core/log.*`), so it reaches the web
 
 ```sh
 scripts/setup-dev.sh        # once: pinned clang-format, clang-tidy, ruff, pytest in .venv-tools + the pre-commit hook
-scripts/check.sh            # what CI checks, in ~10 s
+scripts/check.sh            # every check, in ~10 s (there is no CI: the pre-commit hook runs this)
 scripts/check.sh --build    # plus the firmware build
 ```
 
@@ -146,11 +145,11 @@ Three levels, from fastest to closest to the real thing:
 
 | Level | What it checks | Where it runs |
 |---|---|---|
-| Logic tests | the dose controller and the feeder state machine in named scenarios: jam, cancel, timeout, slow flow, scale fault, a cat stepping on, auto mode, both millis() wraps | on a PC, in CI |
-| Randomized doses and FSM | 10 000 doses with random hoppers, jams, cats, scale dropouts and cancels, and 2 000 runs of random presses and motion. Invariants: the rotor always stops, a dose never outlives its timeout, the door opens at most once, "reached" is never the cat's weight, a dead scale is never "no food" | on a PC, in CI |
-| Control tests | the control glue (`controller.cpp`) against fake hardware: commands, the OTA halt, console pulses, the fault word, boot restore, `Deadline` across both wraps; plus 500 runs of random commands and halts with "nothing moves while halted" | on a PC, in CI |
-| Driver tests | servos (the 20 s rotor cap across both wraps, idle detach, door steps and saves, the safe state), the button debounce after weeks idle, and the scale (tare, a loaded tray at boot, 24-bit sign, never blocking without a chip, lost and recovered), the light ramp and the PIR warm-up and self-test. The drivers compile unchanged against fakes of the ESP32 core and libraries in `test/fakes/` (a link seam), each test in its own process | on a PC, in CI |
-| Static analysis | clang-tidy (`firmware/king_board/.clang-tidy`) on everything that builds on a PC; the firmware build fails on any compiler warning in our code | on a PC, in CI |
+| Logic tests | the dose controller and the feeder state machine in named scenarios: jam, cancel, timeout, slow flow, scale fault, a cat stepping on, auto mode, both millis() wraps | on a PC, before every commit |
+| Randomized doses and FSM | 10 000 doses with random hoppers, jams, cats, scale dropouts and cancels, and 2 000 runs of random presses and motion. Invariants: the rotor always stops, a dose never outlives its timeout, the door opens at most once, "reached" is never the cat's weight, a dead scale is never "no food" | on a PC, before every commit |
+| Control tests | the control glue (`controller.cpp`) against fake hardware: commands, the OTA halt, console pulses, the fault word, boot restore, `Deadline` across both wraps; plus 500 runs of random commands and halts with "nothing moves while halted" | on a PC, before every commit |
+| Driver tests | servos (the 20 s rotor cap across both wraps, idle detach, door steps and saves, the safe state), the button debounce after weeks idle, and the scale (tare, a loaded tray at boot, 24-bit sign, never blocking without a chip, lost and recovered), the light ramp and the PIR warm-up and self-test. The drivers compile unchanged against fakes of the ESP32 core and libraries in `test/fakes/` (a link seam), each test in its own process | on a PC, before every commit |
+| Static analysis | clang-tidy (`firmware/king_board/.clang-tidy`) on everything that builds on a PC; the firmware build fails on any compiler warning in our code | on a PC, before every commit |
 | Hardware-in-the-loop | a real board over Wi-Fi: version, login, `/status` speed, the camera never blocking the web, console, heap; with `--actuators` also the door, light and rotor | on the bench, against a live board |
 
 ```sh
@@ -203,7 +202,7 @@ The state machine is in place for dosing behind a closed door and opening it for
 ## Web UI
 
 The pages are plain HTML in `firmware/king_board/web/`.
-`web/build.py` bundles them into `src/net/pages.h`, which the firmware serves; CI fails if the two are out of sync.
+`web/build.py` bundles them into `src/net/pages.h`, which the firmware serves; check.sh fails if the two are out of sync.
 The index and cats pages are gzipped. `cam.html` is kept as plain text, because the firmware fills it in at runtime.
 The cats page loads a font from Google Fonts and falls back to system fonts without internet.
 
@@ -275,10 +274,8 @@ git tag -a v0.2.0 -m "v0.2.0"
 git push origin main v0.2.0
 ```
 
-CI runs on pushes to `main`, on pull requests and on tags. It checks formatting, the web bundle, the logic and control tests, clang-tidy, the Python lint and tests, and builds the firmware with every warning on.
-On a `v*` tag it also checks that the tag matches `FW_VERSION` and publishes a GitHub release with the `.bin`.
-That `.bin` is built from `secrets.h.example`, so it proves the build but has no Wi-Fi credentials: flash your own build.
-If the repository has an `OTA_SIGNING_KEY` secret (the private key PEM), CI also publishes a signed copy for OTA.
+There is no CI. The gate is local: the pre-commit hook runs `scripts/check.sh` (formatting, one log, the web bundle, the logic, control and driver tests, clang-tidy, Python lint and tests), and adds the firmware build with every warning on when a commit touches the firmware. The review agents in `.claude/agents/` run the same script.
+Before tagging, run `scripts/check.sh --build` once more and check that the tag matches `FW_VERSION`. Flash your own build: the firmware carries your Wi-Fi credentials, so there is no prebuilt `.bin`.
 
 ## Recognition
 

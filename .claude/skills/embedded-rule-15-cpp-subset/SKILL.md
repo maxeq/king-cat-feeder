@@ -5,7 +5,7 @@ description: Audit embedded C++ rule 15 on the King board firmware: a safe C++ s
 
 # Rule 15: a safe C++ subset, enforced by tools
 
-**The rule.** Embedded C++ avoids exceptions and RTTI, uses fixed-width integer types for anything with a range, keeps types consistent (one type for milliseconds), marks what doesn't change `const`, avoids implicit narrowing, and runs static analysis in CI.
+**The rule.** Embedded C++ avoids exceptions and RTTI, uses fixed-width integer types for anything with a range, keeps types consistent (one type for milliseconds), marks what doesn't change `const`, avoids implicit narrowing, and runs static analysis in the commit gate (here the local pre-commit hook and `scripts/check.sh`: there is no CI).
 
 **Why it matters.** These rules remove whole classes of bugs before the board runs.
 
@@ -15,12 +15,12 @@ description: Audit embedded C++ rule 15 on the King board firmware: a safe C++ s
 - Time types: find `unsigned long`, `uint32_t` and `int` used for milliseconds. Report mixes.
 - Find `throw`, `try`, `dynamic_cast` and `typeid`; they should not appear.
 - `const` correctness of getters and parameters, and `static` for file-local state.
-- Check whether clang-tidy or cppcheck runs in `.github/workflows/ci.yml`. If either is installed locally, run it on `firmware/king_board/src` (`cppcheck --enable=warning,style,performance --std=c++17 firmware/king_board/src`).
-- Formatting is enforced: `.clang-format` plus the CI step.
+- Check whether clang-tidy or cppcheck runs in `scripts/check.sh` (which `.githooks/pre-commit` runs on every commit). If either is installed locally, run it on `firmware/king_board/src` (`cppcheck --enable=warning,style,performance --std=c++17 firmware/king_board/src`).
+- Formatting is enforced: `.clang-format` plus the `scripts/check.sh` step.
 
 ## Verdict
 
-PASS: zero warnings, consistent types, static analysis in CI. PARTIAL: zero warnings but no analyser, or mixed types. FAIL: warnings in our code.
+PASS: zero warnings, consistent types, static analysis in the commit gate. PARTIAL: zero warnings but no analyser, or mixed types. FAIL: warnings in our code.
 
 ## Report
 

@@ -11,7 +11,7 @@ with TypeScript analogies. Code, comments and docs are in English.
 
 ```sh
 scripts/setup-dev.sh        # once: pinned clang-format, clang-tidy, ruff, pytest, cryptography in .venv-tools + git hook
-scripts/check.sh            # everything CI checks, except the firmware build (~10 s)
+scripts/check.sh            # every check, except the firmware build (~10 s); there is no CI
 scripts/check.sh --build    # the same plus the firmware build
 
 cd firmware/king_board

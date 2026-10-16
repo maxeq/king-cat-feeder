@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Everything CI checks, locally. Used by the git pre-commit hook and by Claude's hooks.
+# Every check the project has (there is no CI). Run by the git pre-commit hook (with --build
+# when the firmware changes), by Claude's hooks, and by the review agents.
 #   scripts/check.sh           format, web bundle, logic tests, Python lint and tests  (~5 s)
 #   scripts/check.sh --build   ... plus the firmware build
 set -uo pipefail

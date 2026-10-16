@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PostToolUse (Edit/Write): keep the tree in the shape CI expects.
+# PostToolUse (Edit/Write): keep the tree in the shape check.sh expects.
 #   C++ in the firmware  -> clang-format in place
 #   web/*.html           -> rebuild src/net/pages.h
 root=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}

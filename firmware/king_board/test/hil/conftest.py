@@ -4,7 +4,7 @@
     KING_HOST=<board-ip> pytest firmware/king_board/test/hil --actuators  # also moves things
 
 KING_USER / KING_PASS default to the web login in secrets.h.example. Without
-KING_HOST every test is skipped, which is what happens in CI.
+KING_HOST every test is skipped, which is what happens in scripts/check.sh.
 """
 import base64
 import json

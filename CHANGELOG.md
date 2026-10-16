@@ -6,6 +6,9 @@ and the firmware uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+- The GitHub Actions workflow. The gate is local: the pre-commit hook runs `scripts/check.sh` (with the firmware build when the firmware changes), and the review agents run it too. There are no prebuilt release binaries.
+
 Brings every rule of the architecture audit (`/embedded-audit`) to PASS. Not run on hardware yet.
 
 ### Changed
@@ -27,7 +30,7 @@ Brings every rule of the architecture audit (`/embedded-audit`) to PASS. Not run
 - Fault bit 10, `DoseTimeout`: a dose that timed out on slow flow is no longer reported as `NoFood`.
 - One log: every line goes through `src/core/log.*` and reaches `/log` and telnet (OTA, rollback, scale and camera boot messages used to go to USB only). `warnf`/`errorf` mark and count problems; `/health` reports `warnings` and `errors`; check.sh fails on a stray `Serial.print`.
 - `/health` reports free heap and its largest block, free PSRAM, each task's free stack, lost log lines, lock timeouts and the reset reason. `/status` shows the reset reason.
-- clang-tidy in `scripts/check.sh` and CI; the CI firmware build fails on any warning in our code.
+- clang-tidy in `scripts/check.sh`. The pre-commit hook builds the firmware when a commit touches it, and the build fails on any warning in our code.
 - Tests: drivers on the host through a link seam (`test/test_drivers.cpp`, fakes in `test/fakes/`): the rotor cap, door steps, safe state, button debounce after weeks idle, scale tare and recovery. Control glue, `Deadline` across both wraps, a randomized FSM run, slow flow, a scale that dies at the timeout, the 2^32 wrap for the FSM.
 
 ### Fixed

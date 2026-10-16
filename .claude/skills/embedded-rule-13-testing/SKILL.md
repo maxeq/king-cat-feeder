@@ -5,7 +5,7 @@ description: Audit embedded C++ rule 13 on the King board firmware: logic is tes
 
 # Rule 13: logic is tested on a PC and the board is tested on the bench
 
-**The rule.** Pure logic has host unit tests, including randomized tests with safety invariants. The control glue is testable with fake drivers. A hardware-in-the-loop suite checks the real board. CI runs everything that doesn't need hardware.
+**The rule.** Pure logic has host unit tests, including randomized tests with safety invariants. The control glue is testable with fake drivers. A hardware-in-the-loop suite checks the real board. A gate that every commit passes runs everything that doesn't need hardware (here a local one: there is no CI).
 
 **Why it matters.** Untested embedded code is tested by the cat.
 
@@ -15,11 +15,11 @@ description: Audit embedded C++ rule 13 on the King board firmware: logic is tes
 - Read `test/test_logic.cpp`: are the invariants strong? Look for assertions that accept any result and for scenarios the fuzz never generates.
 - Coverage gaps: `src/app/control.cpp` and the drivers have no host tests unless fakes exist.
 - `test/hil/`: what does it cover, and is it runnable (`KING_HOST=... pytest firmware/king_board/test/hil`)?
-- `.github/workflows/ci.yml`: which tests run in CI?
+- The gate: `.githooks/pre-commit` (enabled by `scripts/setup-dev.sh`, `git config core.hooksPath`) runs `scripts/check.sh`, with `--build` when the firmware changes. Which test suites does `scripts/check.sh` run?
 
 ## Verdict
 
-PASS: logic and control glue have host tests, HIL exists, CI runs them. PARTIAL: only logic is host-tested. FAIL: no automated tests.
+PASS: logic, control glue and drivers with logic have host tests, HIL exists, and the commit gate runs them. PARTIAL: only logic is host-tested. FAIL: no automated tests.
 
 ## Report
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-time dev setup: pinned formatter, static analyser, linter and test runner in .venv-tools,
-# plus the git pre-commit hook. Same versions as CI.
+# plus the git pre-commit hook, which is the project's gate (there is no CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 -m venv .venv-tools
