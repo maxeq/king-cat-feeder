@@ -1,0 +1,20 @@
+build/
+*.bin
+.DS_Store
+secrets.h
+
+# ML (Python)
+ml/.venv/
+ml/data/
+ml/embeddings/
+ml/results/
+*.pt
+*.npz
+__pycache__/
+ml/models/
+ml/embeddings_face/
+ml/data/crops_face/
+ml/king_photo/
+firmware/king_board/web/demo_photos.json
+.pytest_cache/
+.venv-tools/

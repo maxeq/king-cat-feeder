@@ -1,0 +1,9 @@
+BasedOnStyle: Google
+ColumnLimit: 110
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AlignTrailingComments: true
+SpacesBeforeTrailingComments: 2
+SortIncludes: Never

@@ -1,0 +1,291 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>King Feeder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --ground:#EEF1EC; --surface:#FFFFFF; --sunk:#E3E8E1; --ink:#17201B; --muted:#5C6B62; --line:#D5DDD3;
+  --accent:#E9A80C; --accent-ink:#1B1500; --own:#2F8A55; --own-bg:#E1F1E6; --bad:#C8433A; --bad-bg:#F8E3E1;
+  --neutral:#7A8780; --shadow:0 8px 28px rgba(23,32,27,.12);
+  font-family:"Golos Text",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0F1512; --surface:#18201B; --sunk:#222C26; --ink:#E6EDE8; --muted:#97A69C; --line:#2C3830;
+  --accent:#F0B21C; --accent-ink:#1B1500; --own:#55B37C; --own-bg:#1C3326; --bad:#E2675E; --bad-bg:#3A201E;
+  --neutral:#8E9A93; --shadow:0 8px 28px rgba(0,0,0,.45); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --ground:#0F1512; --surface:#18201B; --sunk:#222C26; --ink:#E6EDE8; --muted:#97A69C; --line:#2C3830;
+  --accent:#F0B21C; --accent-ink:#1B1500; --own:#55B37C; --own-bg:#1C3326; --bad:#E2675E; --bad-bg:#3A201E;
+  --neutral:#8E9A93; --shadow:0 8px 28px rgba(0,0,0,.45); color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-size:15px;line-height:1.45;padding-inline:16px;padding-block:0 96px}
+.app{max-width:440px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:18px 2px}
+.top h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+.status{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--own)}
+.demo{font-size:12px;color:var(--muted);background:var(--sunk);border-radius:8px;padding:6px 10px}
+.tabs{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--sunk);border-radius:12px;padding:4px;gap:4px}
+.tabs button{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:600;padding:10px;border-radius:9px;cursor:pointer;display:flex;justify-content:center;align-items:center;gap:8px}
+.tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.badge{background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:700;border-radius:99px;padding:1px 7px}
+.section-label{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:6px 2px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.strip{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.strip img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block}
+.more{display:grid;place-items:center;background:var(--sunk);border-radius:10px;font-weight:600;color:var(--muted);aspect-ratio:1}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.name{font-weight:700;font-size:17px}
+.meta{color:var(--muted);font-size:13px}
+.btn{border:0;font:inherit;font-weight:600;border-radius:11px;padding:11px 16px;cursor:pointer}
+.btn-accent{background:var(--accent);color:var(--accent-ink)}
+.btn-ghost{background:var(--sunk);color:var(--ink)}
+.btn:focus-visible,.tabs button:focus-visible,.opt:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.chip{font-size:12px;font-weight:600;border-radius:99px;padding:3px 9px}
+.chip-own{background:var(--own-bg);color:var(--own)} .chip-bad{background:var(--bad-bg);color:var(--bad)}
+.chip-new{background:var(--accent);color:var(--accent-ink)}
+.profile{display:grid;grid-template-columns:64px 1fr;gap:12px;align-items:center}
+.avatar{width:64px;height:64px;border-radius:50%;object-fit:cover}
+.meter{height:12px;background:var(--sunk);border-radius:99px;overflow:hidden}
+.meter span{display:block;height:100%;background:var(--own);border-radius:99px}
+.nums{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums;font-size:13.5px}
+.big{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;align-items:end;height:90px;padding-top:6px}
+.bar{display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end}
+.bar i{display:block;width:100%;border-radius:6px 6px 3px 3px;background:var(--own);opacity:.85}
+.bar.today i{opacity:1;background:var(--accent)}
+.bar small{font-size:11px;color:var(--muted)}
+.visits{display:flex;flex-direction:column}
+.visit{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;font-size:14px}
+.visit:first-child{border-top:0}
+.empty{color:var(--muted);text-align:center;padding:22px 8px}
+.live{width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--sunk);display:block}
+.live-ph{width:100%;aspect-ratio:1;border-radius:12px;background:var(--sunk);display:grid;place-items:center;color:var(--muted)}
+.found{font-size:20px;font-weight:700}
+.slider{display:flex;align-items:center;gap:12px}
+.slider input{flex:1;accent-color:var(--accent)}
+.slider output{min-width:46px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+/* label sheet */
+.scrim{position:fixed;inset:0;background:rgba(10,14,12,.45);display:flex;align-items:flex-end;justify-content:center;z-index:10}
+.sheet{background:var(--surface);width:100%;max-width:480px;border-radius:20px 20px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:14px;max-height:92%;overflow:auto;box-shadow:var(--shadow)}
+.sheet h2{margin:0;font-size:19px}
+.pick{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.pick button{border:0;padding:0;background:none;position:relative;cursor:pointer;border-radius:10px}
+.pick img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block;transition:opacity .15s}
+.pick button[aria-pressed="false"] img{opacity:.3}
+.pick button[aria-pressed="false"]::after{content:"not this cat";position:absolute;inset:auto 6px 6px auto;background:var(--bad);color:#fff;font-size:11px;font-weight:700;padding:2px 6px;border-radius:6px}
+.opts{display:flex;flex-direction:column;gap:8px}
+.opt{display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:14px;padding:12px;background:var(--surface);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.opt[aria-checked="true"]{border-color:var(--accent);background:var(--sunk)}
+.opt b{display:block} .opt span{color:var(--muted);font-size:13px}
+.sym{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:700;flex:none}
+.own-fields{display:flex;flex-direction:column;gap:10px;padding:2px}
+.own-fields label{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:5px}
+.own-fields input[type=text]{font:inherit;padding:11px 12px;border-radius:11px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
+.stepper{display:flex;align-items:center;gap:10px}
+.stepper button{width:42px;height:42px;border-radius:11px;border:0;background:var(--sunk);color:var(--ink);font-size:20px;font-weight:700;cursor:pointer}
+.stepper output{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;min-width:96px;text-align:center}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--surface);padding:11px 16px;border-radius:12px;font-weight:600;z-index:20;max-width:90%}
+@media (prefers-reduced-motion:no-preference){.sheet{animation:up .22s ease-out}@keyframes up{from{transform:translateY(30px);opacity:.6}}}
+</style></head><body>
+
+<div class="app">
+  <header class="top">
+    <h1>King Feeder</h1>
+    <div class="status"><span class="dot"></span>at the country house · seen 2 min ago</div>
+  </header>
+  <div class="demo">__DEMO_NOTE__</div>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-found" aria-selected="true">Found <span class="badge" id="new-count"></span></button>
+    <button role="tab" id="tab-mine" aria-selected="false">My cats</button>
+    <button role="tab" id="tab-cam" aria-selected="false">Camera</button>
+  </div>
+  <main id="view"></main>
+</div>
+<div id="layer"></div>
+
+<script>
+const IMG = __PHOTOS__;
+const state = {
+  tab: "found",
+  groups: [
+    {id:"g-ginger", photos:IMG.ginger, count:12, seen:"today 03:14, 04:40, 05:02", status:"new"},
+    {id:"g-tabby",  photos:IMG.tabby,  count:6,  seen:"yesterday 22:51",               status:"new"},
+  ],
+  cats: [
+    {id:"king", name:"King", role:"own", photos:IMG.king, norm:60, today:38, count:47,
+     week:[58,61,55,60,49,62,38], visits:[["07:42",14],["11:15",12],["15:30",12]]},
+  ],
+};
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function strip(photos, total){
+  const shown = photos.slice(0, 3).map(p => `<img src="${p}" alt="">`).join("");
+  return `<div class="strip">${shown}<div class="more">+${Math.max(0,total-3)}</div></div>`;
+}
+function renderFound(){
+  const fresh = state.groups.filter(g => g.status === "new");
+  const strangers = state.cats.filter(c => c.role === "stranger");
+  let h = `<div class="section-label">Waiting for you</div>`;
+  h += fresh.length ? fresh.map((g,i) => `
+    <div class="card">
+      ${strip(g.photos, g.count)}
+      <div class="row">
+        <div><div class="name">New cat #${i+1} <span class="chip chip-new">new</span></div>
+        <div class="meta">${g.count} photos · ${esc(g.seen)}</div></div>
+        <button class="btn btn-accent" data-label="${g.id}">Who is this?</button>
+      </div>
+    </div>`).join("") : `<div class="card empty">All found cats are labeled. New ones will show up here after visits to the feeder.</div>`;
+  if (strangers.length){
+    h += `<div class="section-label">Strangers — the door stays closed</div>`;
+    h += strangers.map(c => `
+      <div class="card"><div class="profile"><img class="avatar" src="${c.photos[0]}" alt="">
+        <div><div class="name">${esc(c.name)} <span class="chip chip-bad">blocked</span></div>
+        <div class="meta">${c.count} attempts · last ${esc(c.seen||"")}</div></div></div></div>`).join("");
+  }
+  return h;
+}
+function renderMine(){
+  const own = state.cats.filter(c => c.role === "own");
+  if (!own.length) return `<div class="card empty">No cats yet. Label a cat in the Found tab.</div>`;
+  const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  return own.map(c => {
+    const left = Math.max(0, c.norm - c.today), pct = Math.min(100, Math.round(c.today / c.norm * 100));
+    const max = Math.max(c.norm, ...c.week);
+    return `
+    <div class="card">
+      <div class="profile"><img class="avatar" src="${c.photos[0]}" alt="">
+        <div><div class="name">${esc(c.name)} <span class="chip chip-own">mine</span></div>
+        <div class="meta">${c.norm} g a day · ${c.count} photos in training</div></div></div>
+      <div class="row"><div><div class="meta">Eaten today</div><div class="big">${c.today} g</div></div>
+        <div style="text-align:right"><div class="meta">Left for today</div><div class="big">${left} g</div></div></div>
+      <div class="meter" aria-label="${pct}% of daily amount"><span style="width:${pct}%"></span></div>
+      <div class="nums"><span>0 g</span><span>daily ${c.norm} g</span></div>
+    </div>
+    <div class="card">
+      <div class="row"><b>This week</b><span class="meta">grams per day</span></div>
+      <div class="week">${c.week.map((v,i) => `<div class="bar ${i===6?"today":""}"><small>${v}</small><i style="height:${Math.round(v/max*62)}px"></i><small>${days[i]}</small></div>`).join("")}</div>
+    </div>
+    <div class="card">
+      <div class="row"><b>Visits today</b><span class="meta">from the scale</span></div>
+      <div class="visits">${c.visits.map(([t,g]) => `<div class="visit"><span>${t}</span><span>${g} g</span></div>`).join("")}</div>
+      <button class="btn btn-ghost" data-norm="${c.id}">Change daily amount</button>
+    </div>`;
+  }).join("");
+}
+let camOn = true, camBusy = false, camLast = null, bright = null;
+fetch("/bright").then(r => r.json()).then(j => { bright = j.pct; if (state.tab === "cam") render(); }).catch(() => {});
+function camParts(){
+  const c = camLast;
+  return {
+    img: c && c.img ? `<img class="live" src="data:image/jpeg;base64,${c.img}" alt="camera frame">`
+                    : `<div class="live-ph">${camBusy ? "Getting a frame…" : "No frame yet"}</div>`,
+    verdict: !c ? "Waiting for the first frame" : !c.ok ? "The camera module is not responding"
+           : c.count ? `Found ${c.count} · ${c.best}% sure` : "Nothing found in this frame",
+    meta: c ? (c.ok ? `frame + recognition in ${(c.ms/1000).toFixed(1)} s` : "check the wires and power of the camera module")
+            : "a frame takes about a second",
+  };
+}
+function updateCam(){                     // update only the image and caption — leave the slider and buttons alone
+  const p = camParts(), w = $("#live-wrap");
+  if (!w) return;
+  w.innerHTML = p.img; $("#verdict").textContent = p.verdict; $("#cam-meta").textContent = p.meta;
+}
+function renderCam(){
+  const p = camParts();
+  return `<div class="card"><div id="live-wrap">${p.img}</div>
+    <div class="row"><div><div class="found" id="verdict">${p.verdict}</div>
+      <div class="meta" id="cam-meta">${p.meta}</div></div>
+      <button class="btn ${camOn ? "btn-ghost" : "btn-accent"}" id="cam-toggle">${camOn ? "Pause" : "Resume"}</button></div>
+  </div>
+  <div class="card"><div class="row"><b>Light</b><span class="meta">brightness when the light turns on</span></div>
+    <div class="slider"><input type="range" id="bright" min="0" max="100" step="5" value="${bright ?? 20}" aria-label="Light brightness">
+    <output id="bright-out">${bright ?? 20}%</output></div></div>
+  <div class="meta" style="padding:0 4px">Live view from the feeder camera. The current model looks for faces; it will look for cats once trained.</div>`;
+}
+async function camLoop(){
+  if (camBusy || state.tab !== "cam" || !camOn) return;
+  camBusy = true;
+  try {
+    const r = await fetch("/frame?since=" + (camLast?.at ?? 0), {cache:"no-store"});
+    const j = await r.json();
+    if (!j.same) camLast = j;            // "same" = no newer frame yet, keep showing this one
+    else if (camLast) camLast.ok = j.ok;
+  }
+  catch (e) { camLast = {ok:false, count:0, best:0, ms:0, img:""}; }
+  camBusy = false;
+  if (state.tab === "cam") { updateCam(); setTimeout(camLoop, 500); }
+}
+function render(){
+  const n = state.groups.filter(g => g.status === "new").length;
+  $("#new-count").textContent = n; $("#new-count").hidden = !n;
+  $("#tab-found").setAttribute("aria-selected", state.tab === "found");
+  $("#tab-mine").setAttribute("aria-selected", state.tab === "mine");
+  $("#tab-cam").setAttribute("aria-selected", state.tab === "cam");
+  const body = state.tab === "found" ? renderFound() : state.tab === "mine" ? renderMine() : renderCam();
+  $("#view").innerHTML = `<div class="app" style="padding:0">${body}</div>`;
+  const b = $("#bright");
+  if (b) {
+    b.oninput = () => { $("#bright-out").textContent = b.value + "%"; };
+    b.onchange = () => { bright = +b.value; fetch("/bright?v=" + b.value).catch(() => {}); };
+  }
+  const t = $("#cam-toggle");
+  if (t) t.onclick = () => { camOn = !camOn; render(); if (camOn) camLoop(); };
+}
+
+function openSheet(g){
+  let choice = "stranger", norm = 50, keep = g.photos.map(() => true);
+  const draw = () => {
+    $("#layer").innerHTML = `
+    <div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-label="Who is this">
+      <div class="row"><h2>Who is this?</h2><button class="btn btn-ghost" id="close">Close</button></div>
+      <div class="meta">Tap the photos that show a different cat.</div>
+      <div class="pick">${g.photos.map((p,i) => `<button aria-pressed="${keep[i]}" data-i="${i}"><img src="${p}" alt="photo ${i+1}"></button>`).join("")}</div>
+      <div class="opts" role="radiogroup">
+        <button class="opt" role="radio" aria-checked="${choice==="own"}" data-c="own"><div class="sym" style="background:var(--own-bg);color:var(--own)">✓</div><div><b>My cat</b><span>feed the daily amount</span></div></button>
+        ${choice==="own" ? `<div class="own-fields">
+          <label for="cat-name">Name<input type="text" id="cat-name" value="New cat"></label>
+          <label>Daily amount<div class="stepper"><button id="minus" aria-label="less">−</button><output id="norm">${norm} g</output><button id="plus" aria-label="more">+</button></div></label>
+        </div>` : ""}
+        <button class="opt" role="radio" aria-checked="${choice==="stranger"}" data-c="stranger"><div class="sym" style="background:var(--bad-bg);color:var(--bad)">✕</div><div><b>Stranger</b><span>the door won’t open</span></div></button>
+        <button class="opt" role="radio" aria-checked="${choice==="none"}" data-c="none"><div class="sym" style="background:var(--sunk);color:var(--neutral)">?</div><div><b>Not a cat</b><span>shadow, bag, person</span></div></button>
+      </div>
+      <button class="btn btn-accent" id="save">Save</button>
+    </div></div>`;
+    const nameVal = $("#cat-name");
+    $("#close").onclick = () => $("#layer").innerHTML = "";
+    $("#scrim").onclick = e => { if (e.target.id === "scrim") $("#layer").innerHTML = ""; };
+    document.querySelectorAll(".pick button").forEach(b => b.onclick = () => { keep[+b.dataset.i] = !keep[+b.dataset.i]; draw(); });
+    document.querySelectorAll(".opt").forEach(b => b.onclick = () => { choice = b.dataset.c; draw(); });
+    if ($("#minus")) { $("#minus").onclick = () => { norm = Math.max(5, norm-5); $("#norm").textContent = norm+" g"; };
+                       $("#plus").onclick  = () => { norm = Math.min(200, norm+5); $("#norm").textContent = norm+" g"; }; }
+    $("#save").onclick = () => {
+      const photos = g.photos.filter((_,i) => keep[i]), removed = keep.filter(k => !k).length;
+      g.status = "done";
+      if (choice === "own") {
+        const name = (nameVal?.value || "New cat").trim() || "New cat";
+        state.cats.push({id:g.id, name, role:"own", photos, norm, today:0, count:g.count-removed, week:[0,0,0,0,0,0,0], visits:[]});
+        toast(`${name}: ${norm} g a day. Photos added to training.`); state.tab = "mine";
+      } else if (choice === "stranger") {
+        state.cats.push({id:g.id, name: g.id==="g-ginger" ? "Ginger" : "Tabby", role:"stranger", photos, count:g.count-removed, seen:g.seen.split(",").pop().trim()});
+        toast("Marked as a stranger. The door won’t open for this cat.");
+      } else toast("Removed from Found.");
+      $("#layer").innerHTML = ""; render();
+    };
+  };
+  draw();
+}
+function toast(msg){
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.append(t);
+  setTimeout(() => t.remove(), 2600);
+}
+document.addEventListener("click", e => {
+  const l = e.target.closest("[data-label]"); if (l) openSheet(state.groups.find(g => g.id === l.dataset.label));
+  const n = e.target.closest("[data-norm]"); if (n) toast("In the working version: the same ±5 g step as when labeling.");
+});
+$("#tab-found").onclick = () => { state.tab = "found"; render(); };
+$("#tab-mine").onclick  = () => { state.tab = "mine";  render(); };
+$("#tab-cam").onclick   = () => { state.tab = "cam";   render(); camLoop(); };
+render();
+</script>
+</body></html>

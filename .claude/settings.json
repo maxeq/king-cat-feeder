@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/check.sh:*)",
+      "Bash(arduino-cli compile:*)",
+      "Bash(g++:*)",
+      "Bash(python3 firmware/king_board/web/build.py:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(arduino-cli upload:*)",
+      "Bash(git tag:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-files.sh" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/before-commit.sh" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/after-edit.sh" }]
+      }
+    ]
+  }
+}
