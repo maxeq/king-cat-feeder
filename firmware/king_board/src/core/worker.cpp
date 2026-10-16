@@ -1,4 +1,5 @@
 #include "worker.h"
+#include "../config.h"
 #include "watchdog.h"
 
 Worker::Worker(const char* name, int core, uint32_t stackBytes, int queueDepth)
@@ -7,18 +8,17 @@ Worker::Worker(const char* name, int core, uint32_t stackBytes, int queueDepth)
 void Worker::begin() {
   if (queue_) return;
   queue_ = xQueueCreate(depth_, sizeof(Item));
-  // priority 1: below the control task and Wi-Fi, so a long job never delays them
-  xTaskCreatePinnedToCore(run, name_, stack_, this, 1, nullptr, core_);
+  // below the control task and Wi-Fi, so a long job never delays them
+  xTaskCreatePinnedToCore(run, name_, stack_, this, WORKER_PRIORITY, &task_, core_);
 }
 
 bool Worker::post(Job job, int arg) {
   if (!queue_) return false;
   Item item{job, arg};
-  pending_++;
-  if (xQueueSend(queue_, &item, 0) == pdTRUE) return true;
-  pending_--;
-  return false;
+  return xQueueSend(queue_, &item, 0) == pdTRUE;
 }
+
+uint32_t Worker::stackFree() const { return task_ ? uxTaskGetStackHighWaterMark(task_) : 0; }
 
 void Worker::run(void* self) {
   Worker* w = static_cast<Worker*>(self);
@@ -26,8 +26,8 @@ void Worker::run(void* self) {
   Item item;
   for (;;) {
     watchdogFeed();
-    if (xQueueReceive(w->queue_, &item, pdMS_TO_TICKS(1000)) != pdTRUE) continue;  // idle: wake to feed
+    if (xQueueReceive(w->queue_, &item, pdMS_TO_TICKS(WORKER_IDLE_MS)) != pdTRUE)
+      continue;  // idle: wake to feed
     item.job(item.arg);
-    w->pending_--;
   }
 }

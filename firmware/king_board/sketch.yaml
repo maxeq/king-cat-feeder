@@ -10,5 +10,4 @@ profiles:
     libraries:
       - ESP32Servo (3.2.1)
       - HX711 (0.6.4)
-      - Seeed Arduino SSCMA (1.0.3)
       - ArduinoJson (7.4.3)

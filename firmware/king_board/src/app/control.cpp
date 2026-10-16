@@ -1,10 +1,15 @@
+// The control task: the FreeRTOS side of the Controller. It runs the 10 ms tick, takes
+// commands from a queue, publishes a status snapshot under a lock, and measures itself.
+// The adapters below are the real hardware behind the ports (ports.h): each method calls one driver.
 #include "control.h"
+#include <Arduino.h>
+#include <atomic>
 #include "../config.h"
 #include "../core/lock.h"
 #include "../core/log.h"
 #include "../core/rollback.h"
+#include "../core/store.h"
 #include "../core/watchdog.h"
-#include "../clock.h"
 #include "../drivers/button.h"
 #include "../drivers/grove.h"
 #include "../drivers/indicator.h"
@@ -12,22 +17,130 @@
 #include "../drivers/pir.h"
 #include "../drivers/scale.h"
 #include "../drivers/servos.h"
-#include <Arduino.h>
+#include "controller.h"
+#include "ports.h"
+
+namespace {
+
+// Adapters: each port, implemented by its driver. One method, one driver call.
+struct BoardRotor : Rotor {
+  bool set(int us) override { return rotorSet(us); }
+  void clearTrip() override { rotorClearTrip(); }
+  bool tripped() override { return rotorTripped(); }
+  int us() override { return rotorUs(); }
+};
+
+struct BoardDoor : Door {
+  void moveTo(int angle, bool releaseWhenThere) override { doorMoveTo(angle, releaseWhenThere); }
+  void release() override { doorRelease(); }
+  int angle() override { return doorAngle(); }
+  bool closed() override { return doorClosed(); }
+  bool moving() override { return doorMoving(); }
+};
+
+struct BoardServos : Servos {
+  void safe() override { servosSafe(); }
+  void tick(uint32_t now) override { servosTick(now); }
+};
+
+struct BoardScale : Scale {
+  bool tick(uint32_t now, float& grams) override { return scaleTick(now, grams); }
+  bool ok() override { return scaleOk(); }
+  ScaleHealth health() override { return scaleHealth(); }
+  float grams() override { return scaleGrams(); }
+  void tare() override { scaleTare(); }
+  void rawDump() override { scaleRawDump(); }
+};
+
+struct BoardLight : Light {
+  void on() override { lightOn(); }
+  void off() override { lightOff(); }
+  void cut() override { lightCut(); }
+  void setPct(int pct) override { lightSetPct(pct); }
+  void tick(uint32_t now) override { lightTick(now); }
+  int level() override { return lightLevel(); }
+  int maxLevel() override { return lightMaxLevel(); }
+};
+
+struct BoardIndicator : Indicator {
+  void set(IndicatorMode m) override { indicatorSet(m); }
+  void tick(uint32_t now) override { indicatorTick(now); }
+};
+
+struct BoardInputs : Inputs {
+  bool buttonTick(uint32_t now) override { return ::buttonTick(now); }
+  void pirTick(uint32_t now) override { ::pirTick(now); }
+  bool pirReady(uint32_t now) override { return ::pirReady(now); }
+  bool pir() override { return pirRaw(); }
+  void pirSelfTest(uint32_t now) override { ::pirSelfTest(now); }
+};
+
+struct BoardPeers : Peers {
+  bool cameraOnline() override { return aiStatus().online; }
+  bool cameraBusy() override { return aiBusy(); }
+  bool bootCrashed() override { return ::bootCrashed(); }
+};
+
+struct BoardStore : Store {
+  int32_t load(Key k, int32_t fallback) override { return storeGet(k, fallback); }
+  void save(Key k, int32_t value) override { storePut(k, value); }
+};
+
+struct BoardLog : Log {
+  void line(const char* text) override { say(text); }
+};
 
 struct Command {
   Cmd cmd;
   int arg;
 };
 
-static QueueHandle_t commands = nullptr;
-static feeder::Fsm fsm;
-static Mutex statusLock;
-static Status status;  // guarded by statusLock
-static bool halted = false;
-static uint32_t pulseStopAt = 0;
-static IndicatorMode indicatorBase = IndicatorMode::On;  // what the FSM and the console asked for
-static IndicatorMode indicatorShown = IndicatorMode::On;
-static uint32_t tickMaxUs = 0, overruns = 0, lastOverrun = 0;
+// the composition root: the one place where adapters are created and wired to the controller
+BoardRotor rotor;
+BoardDoor door;
+BoardServos servos;
+BoardScale scale;
+BoardLight light;
+BoardIndicator indicator;
+BoardInputs inputs;
+BoardPeers peers;
+BoardStore store;
+BoardLog logPort;
+Controller ctl({rotor, door, servos, scale, light, indicator, inputs, peers, store, logPort});
+QueueHandle_t commands = nullptr;
+Mutex statusLock;
+Status status;  // guarded by statusLock
+std::atomic<bool> haltWanted{false}, resumeWanted{false}, haltedNow{false};
+
+void publish(uint32_t now) {
+  Status s = ctl.status(now);
+  s.stackFree = uxTaskGetStackHighWaterMark(nullptr);
+  Locked lock(statusLock, PUBLISH_LOCK_MS);  // short: this runs inside the 10 ms tick
+  if (lock) status = s;  // on a timeout readers keep the previous snapshot for one more tick
+}
+
+void task(void*) {
+  watchdogSubscribe();
+  TickType_t wake = xTaskGetTickCount();
+  for (;;) {
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(CONTROL_TICK_MS));
+    watchdogFeed();
+    uint32_t t0 = micros();
+    uint32_t now = millis();
+    if (haltWanted.exchange(false)) ctl.halt();  // before the queue: what was queued is dropped
+    if (resumeWanted.exchange(false)) ctl.resume();
+    haltedNow = ctl.halted();
+    Command c;
+    while (xQueueReceive(commands, &c, 0) == pdTRUE)
+      ctl.apply(c.cmd, c.arg, now);
+    ctl.tick(now);
+    if (!ctl.halted()) rollbackPoll(now);  // no NVS write during an OTA
+    publish(now);
+    ctl.tickTook(micros() - t0, now);  // the whole tick, publishing included
+  }
+}
+
+}  // namespace
 
 bool controlSend(Cmd cmd, int arg) {
   Command c{cmd, arg};
@@ -35,259 +148,25 @@ bool controlSend(Cmd cmd, int arg) {
 }
 
 Status controlStatus() {
+  Status s;  // valid = false
   Locked lock(statusLock);
-  return status;
+  if (lock) s = status;
+  return s;
 }
 
-static void rotorManual(int us, const char* what) {
-  if (rotorSet(us))
-    say(String("rotor: ") + what);
-  else
-    say("rotor: refused, safety stop latched (send s to re-arm)");
+bool controlHalt() {
+  haltWanted = true;
+  for (uint32_t t0 = millis(); !haltedNow && millis() - t0 < HALT_ACK_MS;)
+    delay(1);
+  return haltedNow;
 }
 
-static bool busy() {  // manual motor commands wait until a dose is over
-  if (!fsm.dosing()) return false;
-  say("busy: dosing (press the button to cancel)");
-  return true;
-}
-
-static void apply(const Command& c, uint32_t now) {
-  switch (c.cmd) {
-    case Cmd::AutoOn:
-      fsm.setAuto(true);
-      say("auto: ON");
-      break;
-    case Cmd::AutoOff:
-      fsm.setAuto(false);
-      fsm.stopPulse();
-      say("auto: off");
-      if (!fsm.dosing()) rotorSet(ROT_STOP);
-      lightOff();
-      break;
-    case Cmd::RotorFwd:
-      if (!busy()) rotorManual(ROT_FWD, "FORWARD");
-      break;
-    case Cmd::RotorBack:
-      if (!busy()) rotorManual(ROT_BACK, "BACK");
-      break;
-    case Cmd::RotorStop:
-      if (busy()) break;
-      rotorClearTrip();  // an operator stop re-arms a latched safety stop
-      fsm.stopPulse();
-      pulseStopAt = 0;
-      rotorManual(ROT_STOP, "STOP");
-      break;
-    case Cmd::RotorPulse:
-      if (busy()) break;
-      rotorManual(ROT_FWD, ("pulse " + String(c.arg) + " ms").c_str());
-      if (rotorUs() == ROT_FWD) pulseStopAt = (now + c.arg) | 1;  // 0 means no pulse
-      break;
-    case Cmd::DoorOpen:
-      if (!busy()) {
-        say("door: opening...");
-        doorMoveTo(ANG_OPEN);
-      }
-      break;
-    case Cmd::DoorClose:
-      if (!busy()) {
-        say("door: closing...");
-        doorMoveTo(ANG_CLOSED);
-      }
-      break;
-    case Cmd::DoorRelease:
-      doorRelease();
-      say("door: detach+LOW");
-      break;
-    case Cmd::DoorNudge:
-      if (!busy()) doorMoveTo(constrain(doorAngle() + c.arg, 40, 180));
-      break;
-    case Cmd::LightOn:
-      say("light: ON");
-      lightOn();
-      break;
-    case Cmd::LightOff:
-      say("light: off");
-      lightOff();
-      break;
-    case Cmd::LightAlways:
-      fsm.setLightAlways(true, now);
-      lightOn();
-      say("web: light ALWAYS");
-      break;
-    case Cmd::LightMotion:
-      fsm.setLightAlways(false, now);
-      say("web: light on motion");
-      break;
-    case Cmd::LightPct:
-      lightSetPct(c.arg);
-      say("web: brightness " + String(c.arg) + "%");
-      break;
-    case Cmd::IndicatorOn:
-      indicatorBase = IndicatorMode::On;
-      say("indicator: ON");
-      break;
-    case Cmd::IndicatorOff:
-      indicatorBase = IndicatorMode::Off;
-      say("indicator: off");
-      break;
-    case Cmd::Tare:
-      if (!busy()) scaleTare();
-      break;
-    case Cmd::RawDump:
-      scaleRawDump();
-      break;
-    case Cmd::PirSelfTest:
-      pirSelfTest(now);
-      break;
-    case Cmd::SafeStop:  // OTA is about to write flash: everything to a safe state, then hold
-      servosSafe();
-      lightCut();
-      halted = true;
-      break;
-    case Cmd::Resume:
-      halted = false;
-      break;
-  }
-}
-
-static void applyOutputs(const feeder::Outputs& o) {
-  for (int i = 0; i < o.log.count; i++)
-    say(o.log.line[i]);
-  if (o.rotorUs >= 0) rotorSet(o.rotorUs);
-  switch (o.door) {
-    case feeder::Door::Open:
-      doorMoveTo(ANG_OPEN);
-      break;
-    case feeder::Door::Close:
-      doorMoveTo(ANG_CLOSED);
-      break;
-    case feeder::Door::CloseAndRelease:
-      doorMoveTo(ANG_CLOSED, true);
-      break;
-    case feeder::Door::None:
-      break;
-  }
-  if (o.light == feeder::Light::On) lightOn();
-  if (o.light == feeder::Light::Off) lightOff();
-  // the FSM says on/off; blinking comes from the fault word (any critical bit)
-  if (o.indicator == feeder::Indicator::On) indicatorBase = IndicatorMode::On;
-  if (o.indicator == feeder::Indicator::Off) indicatorBase = IndicatorMode::Off;
-}
-
-static uint16_t faultWord(uint32_t now) {
-  uint16_t f = 0;
-  ScaleHealth sh = scaleHealth();
-  if (sh == ScaleHealth::Missing) f = f | Fault::ScaleMissing;
-  if (sh == ScaleHealth::Lost) f = f | Fault::ScaleLost;
-  if (rotorTripped()) f = f | Fault::RotorTripped;
-  if (!aiStatus().online) f = f | Fault::GroveOffline;
-  if (fsm.alarm() == feeder::Alarm::NoFood) f = f | Fault::NoFood;
-  if (fsm.alarm() == feeder::Alarm::ScaleFault) f = f | Fault::DoseScaleFault;
-  if (halted) f = f | Fault::Halted;
-  if (bootCrashed()) f = f | Fault::BootCrashed;
-  if (lastOverrun && now - lastOverrun < 10000) f = f | Fault::TickOverrun;
-  return f;
-}
-
-static uint16_t stateWord() {
-  uint16_t st = 0;
-  if (fsm.dosing()) st = st | State::Dosing;
-  if (!doorClosed()) st = st | State::DoorOpen;
-  if (doorMoving()) st = st | State::DoorMoving;
-  if (scaleHealth() == ScaleHealth::Taring) st = st | State::ScaleTaring;
-  if (fsm.catOnTray()) st = st | State::CatOnTray;
-  if (fsm.autoMode()) st = st | State::AutoMode;
-  if (lightLevel() > 0) st = st | State::LightOn;
-  if (fsm.pirMotion()) st = st | State::Motion;
-  if (aiBusy()) st = st | State::CameraBusy;
-  return st;
-}
-
-static void publish() {
-  Status s;
-  s.scaleOk = scaleOk();
-  s.grams = scaleGrams();
-  s.pir = fsm.pirMotion();
-  s.doorAngle = doorAngle();
-  s.doorClosed = doorClosed();
-  s.lightLevel = lightLevel();
-  s.lightMaxLevel = lightMaxLevel();
-  s.autoMode = fsm.autoMode();
-  s.dosing = fsm.dosing();
-  s.dispensed = fsm.dispensed();
-  s.alarm = fsm.alarm();
-  s.halted = halted;
-  s.faults = faultWord(millis());
-  s.states = stateWord();
-  s.tickMaxUs = tickMaxUs;
-  s.overruns = overruns;
-  Locked lock(statusLock);
-  status = s;
-}
-
-static void tick(uint32_t now) {
-  Command c;
-  while (xQueueReceive(commands, &c, 0) == pdTRUE)
-    apply(c, now);
-  if (halted) return;
-
-  float grams = 0;
-  bool fresh = scaleTick(now, grams);
-  pirTick(now);
-
-  feeder::Inputs in;
-  in.now = now;
-  in.buttonPressed = buttonTick(now);
-  if (in.buttonPressed) rotorClearTrip();  // pressing the button is an operator action too
-  in.pirReady = pirReady(now);
-  in.pir = pirRaw();
-  in.doorClosed = doorClosed();
-  in.doorMoving = doorMoving();
-  in.scaleOk = scaleOk();
-  in.grams = scaleGrams();
-  in.sample.fresh = fresh;
-  in.sample.grams = grams;
-  in.lightLevel = lightLevel();
-  applyOutputs(fsm.step(in));
-
-  if (fsm.dosing()) pulseStopAt = 0;  // the dose took over the rotor
-  if (pulseStopAt && due(now, pulseStopAt)) {
-    pulseStopAt = 0;
-    rotorSet(ROT_STOP);
-    say("rotor: STOP");
-  }
-  servosTick(now);
-  lightTick(now);
-  IndicatorMode want = (faultWord(now) & CRITICAL_FAULTS) ? IndicatorMode::Blink : indicatorBase;
-  if (want != indicatorShown) indicatorSet(indicatorShown = want);
-  indicatorTick(now);
-}
-
-static void task(void*) {
-  watchdogSubscribe();
-  TickType_t wake = xTaskGetTickCount();
-  for (;;) {
-    vTaskDelayUntil(&wake, pdMS_TO_TICKS(CONTROL_TICK_MS));
-    watchdogFeed();
-    uint32_t t0 = micros();
-    tick(millis());
-    uint32_t took = micros() - t0;
-    if (took > tickMaxUs) tickMaxUs = took;
-    if (took > CONTROL_TICK_MS * 1000) {  // the tick overran its slot: timing can't be trusted
-      overruns++;
-      lastOverrun = millis() | 1;
-    }
-    publish();
-  }
-}
+void controlResume() { resumeWanted = true; }
 
 void controlBegin() {
   commands = xQueueCreate(16, sizeof(Command));
-  // bench defaults: no auto feeding, light follows motion, indicator on
-  fsm.setAuto(false);
-  indicatorSet(IndicatorMode::On);
-  publish();
-  // core 1 with the loop, but at priority 5 it preempts the web and the console
-  xTaskCreatePinnedToCore(task, "control", 8 * 1024, nullptr, 5, nullptr, 1);
+  ctl.begin(millis());
+  publish(millis());
+  // core 1 with the loop, but at CONTROL_PRIORITY it preempts the web and the console
+  xTaskCreatePinnedToCore(task, "control", 8 * 1024, nullptr, CONTROL_PRIORITY, nullptr, 1);
 }

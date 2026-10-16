@@ -227,7 +227,7 @@ function render(){
   const b = $("#bright");
   if (b) {
     b.oninput = () => { $("#bright-out").textContent = b.value + "%"; };
-    b.onchange = () => { bright = +b.value; fetch("/bright?v=" + b.value).catch(() => {}); };
+    b.onchange = () => { bright = +b.value; fetch("/bright?v=" + b.value, {method:"POST", headers:{"X-King":"1"}}).catch(() => {}); };
   }
   const t = $("#cam-toggle");
   if (t) t.onclick = () => { camOn = !camOn; render(); if (camOn) camLoop(); };

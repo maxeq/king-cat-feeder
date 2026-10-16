@@ -1,4 +1,5 @@
 #include "feeder.h"
+#include "../clock.h"
 #include "../config.h"
 
 namespace feeder {
@@ -9,6 +10,8 @@ const char* alarmText(Alarm a) {
       return "food not flowing, check the hopper";
     case Alarm::ScaleFault:
       return "scale not answering, check the load cell";
+    case Alarm::SlowFlow:
+      return "food flowing too slowly, check the hopper";
     default:
       return "";
   }
@@ -19,12 +22,19 @@ void Fsm::setLightAlways(bool on, uint32_t now) {
   if (!on) lightOffAt_ = (now + MOTION_LIGHT_MS) | 1;  // fall back to "on motion" without a sudden off
 }
 
+void Fsm::abort() {
+  dose_.abort();
+  pulseUntil_ = 0;
+}
+
 void Fsm::onDoseDone(dose::Result r, Outputs& o) {
   using dose::Result;
   if (r == Result::ScaleFault)
     alarm_ = Alarm::ScaleFault;
-  else if (r == Result::Jammed || r == Result::Timeout)
+  else if (r == Result::Jammed)
     alarm_ = Alarm::NoFood;
+  else if (r == Result::Timeout)  // slow flow needs food to have flowed; none at all is no food
+    alarm_ = dose_.weighedDispensed() >= CYCLE_MIN_G ? Alarm::SlowFlow : Alarm::NoFood;
   else if (timedDose_ && alarm_ == Alarm::ScaleFault)
     ;  // a timed dose (done or cancelled) ran because the scale is still dead: keep saying so
   else
@@ -53,7 +63,8 @@ Outputs Fsm::step(const Inputs& in) {
         o.log.add("BUTTON -> weighed dose: target +%.0f g (start %.1f g)", DOSE_TARGET_G, in.grams);
         dose_.startWeighed(in.now, in.grams);
       } else {
-        o.log.add("BUTTON -> timed dose (scale n/a): shake+3s+3s");
+        o.log.add("BUTTON -> timed dose (scale n/a): shake+%lus+%lus", (unsigned long)(TIMED_RUN_MS / 1000),
+                  (unsigned long)(TIMED_RUN_MS / 1000));
         dose_.startTimed(in.now);
       }
       pulseUntil_ = 0;  // a dose owns the rotor

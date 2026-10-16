@@ -27,28 +27,32 @@ enum class Cmd : uint8_t {
   Tare,
   RawDump,
   PirSelfTest,
-  SafeStop,
-  Resume,  // around an OTA update
 };
 
 struct Status {
-  bool scaleOk;
-  float grams;
-  bool pir;
-  int doorAngle;
-  bool doorClosed;
-  int lightLevel, lightMaxLevel;  // 0..255
-  bool autoMode;
-  bool dosing;
-  float dispensed;
-  feeder::Alarm alarm;
-  bool halted;
-  uint16_t faults;     // Fault bits known to the control task (net adds WifiDown)
-  uint16_t states;     // State bits
-  uint32_t tickMaxUs;  // slowest control tick since boot
-  uint32_t overruns;   // ticks that overran their 10 ms slot
+  bool valid = false;  // false if the snapshot couldn't be read (lock timeout)
+  bool scaleOk = false;
+  float grams = 0;
+  bool pir = false;
+  int doorAngle = 0;
+  bool doorClosed = true;
+  int lightLevel = 0, lightMaxLevel = 0;  // 0..255
+  bool autoMode = false;
+  bool dosing = false;
+  float dispensed = 0;
+  feeder::Alarm alarm = feeder::Alarm::None;
+  uint16_t faults = 0;     // Fault bits known to the control task (net adds WifiDown)
+  uint16_t states = 0;     // State bits
+  uint32_t tickMaxUs = 0;  // slowest control tick since boot
+  uint32_t overruns = 0;   // ticks that overran their 10 ms slot
+  uint32_t stackFree = 0;  // the control task's smallest free stack, bytes
 };
 
 void controlBegin();                     // starts the task; call at the end of setup()
 bool controlSend(Cmd cmd, int arg = 0);  // from any task; false if the queue is full
 Status controlStatus();                  // from any task
+// OTA: the actuators go to their safe state on the next tick and every command is dropped
+// until controlResume(). Not a queued command, so a full queue can't lose it. Waits up to
+// HALT_ACK_MS for the control task to confirm; false if it didn't.
+bool controlHalt();
+void controlResume();

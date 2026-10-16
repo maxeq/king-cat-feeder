@@ -1,11 +1,11 @@
 ---
 name: embedded-audit
-description: Run all 16 embedded C++ architecture rule checks on the King board firmware in parallel and summarise them in one table. Use for a full architecture review or before a release; read-only.
+description: Run all 17 embedded C++ architecture rule checks on the King board firmware in parallel and summarise them in one table. Use for a full architecture review or before a release; read-only.
 ---
 
 # Embedded architecture audit
 
-Check the firmware in `firmware/king_board` against the 16 rules below. Each rule has its own skill in `.claude/skills/<name>/SKILL.md` and can be run alone, for example with `/embedded-rule-03-non-blocking`.
+Check the firmware in `firmware/king_board` against the 17 rules below. Each rule has its own skill in `.claude/skills/<name>/SKILL.md` and can be run alone, for example with `/embedded-rule-03-non-blocking`.
 
 | # | Skill | Rule |
 |---|---|---|
@@ -25,6 +25,7 @@ Check the firmware in `firmware/king_board` against the 16 rules below. Each rul
 | 14 | `embedded-rule-14-observability` | the board explains itself |
 | 15 | `embedded-rule-15-cpp-subset` | a safe C++ subset, enforced by tools |
 | 16 | `embedded-rule-16-security` | the device is secure for where it is deployed |
+| 17 | `embedded-rule-17-ports-adapters` | the core talks to the world through narrow ports |
 
 ## How to run
 

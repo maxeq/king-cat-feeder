@@ -12,7 +12,7 @@ description: Audit embedded C++ rule 8 on the King board firmware: faults are ex
 ## What to check in this repo
 
 - `src/logic/health.h`: is every fault the firmware can detect a bit, and are the bits documented in the README?
-- `src/app/control.cpp` `faultWord()`: does each bit come from a real signal?
+- `src/app/controller.cpp` `faultWord()`: does each bit come from a real signal?
 - `src/logic/dose.cpp`: do different causes stay distinct (Jammed, Timeout, ScaleFault, CatBlocked)? Does a missing measurement (scale silent) avoid triggering escalation?
 - `src/logic/feeder.cpp` `onDoseDone`: are alarms set and cleared consistently, and does the indicator follow `CRITICAL_FAULTS`?
 

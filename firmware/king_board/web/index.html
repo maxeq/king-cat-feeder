@@ -14,12 +14,14 @@
 <body>
 <div id="status">...</div>
 <nav>
-  <button onclick="fetch('/light?m=on')">LIGHT: ALWAYS</button>
-  <button onclick="fetch('/light?m=pir')">LIGHT: on motion</button>
+  <button onclick="post('/light?m=on')">LIGHT: ALWAYS</button>
+  <button onclick="post('/light?m=pir')">LIGHT: on motion</button>
   <a href="/cats">cats</a> · <a href="/cam">camera</a>
 </nav>
 <pre id="log"></pre>
 <script>
+  // state changes: POST plus a header another site can't send without a CORS preflight
+  const post = (url) => fetch(url, {method: "POST", headers: {"X-King": "1"}});
   const status = document.getElementById("status");
   const log = document.getElementById("log");
   setInterval(async () => {

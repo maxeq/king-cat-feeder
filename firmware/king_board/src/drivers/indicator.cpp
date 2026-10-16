@@ -1,6 +1,6 @@
 #include "indicator.h"
-#include "../config.h"
 #include <Arduino.h>
+#include "../config.h"
 
 static IndicatorMode mode = IndicatorMode::Off;
 
@@ -15,5 +15,5 @@ void indicatorSet(IndicatorMode m) {
 }
 
 void indicatorTick(uint32_t now) {
-  if (mode == IndicatorMode::Blink) digitalWrite(PIN_IND, (now / 400) % 2);
+  if (mode == IndicatorMode::Blink) digitalWrite(PIN_IND, (now / INDICATOR_BLINK_MS) % 2);
 }

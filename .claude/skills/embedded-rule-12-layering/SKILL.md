@@ -14,7 +14,7 @@ description: Audit embedded C++ rule 12 on the King board firmware: dependencies
 - For each folder in `firmware/king_board/src`, list its includes: `grep -rn '#include "\.\./' firmware/king_board/src/<layer>`.
 - The allowed order, top to bottom: net → app → logic, drivers → core.
   - `logic` and `drivers` are siblings: neither may include the other.
-  - `logic` may include only its own folder and the shared headers at the root of `src/` (`config.h`, `version.h`, `clock.h`). Every layer may include those.
+  - `logic` may include only its own folder and the shared headers at the root of `src/` (`config.h`, `version.h`, `clock.h`, `types.h`). Every layer may include those.
   - Report every include that points up, or sideways between siblings, for example a driver including net or logic.
 - `king_board.ino` may include everything; it is the composition root.
 - Check for duplicate definitions of the same concept in two layers.

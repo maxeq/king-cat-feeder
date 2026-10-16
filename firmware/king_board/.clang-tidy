@@ -1,0 +1,17 @@
+# Static analysis for the code that builds on a PC: src/logic and the controller.
+# (The hardware code is checked by the compiler with every warning on, in check.sh --build.)
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  performance-*,
+  -performance-enum-size,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-pro-type-member-init,
+  misc-redundant-expression,
+  misc-misplaced-const,
+WarningsAsErrors: "*"
+HeaderFilterRegex: "src/.*"

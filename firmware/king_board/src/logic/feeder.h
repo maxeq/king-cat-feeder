@@ -1,7 +1,6 @@
 #pragma once
 #include <stdint.h>
 #include "dose.h"
-#include "../clock.h"
 #include "messages.h"
 
 // The feeder's state machine. Pure C++: it reads a snapshot of the inputs each
@@ -15,7 +14,7 @@
 //   otherwise            -> the light follows motion, unless it is set to "always on"
 namespace feeder {
 
-enum class Alarm { None, NoFood, ScaleFault };
+enum class Alarm { None, NoFood, ScaleFault, SlowFlow };
 enum class Door { None, Open, Close, CloseAndRelease };
 enum class Light { None, On, Off };
 enum class Indicator { None, On, Off, Blink };
@@ -30,7 +29,6 @@ struct Inputs {
   bool scaleOk = false;
   float grams = 0;
   dose::Sample sample;  // fresh reading this tick, if any
-  int lightLevel = 0;
 };
 
 struct Outputs {
@@ -45,11 +43,14 @@ class Fsm {
  public:
   Outputs step(const Inputs& in);
 
-  void setAuto(bool on) { auto_ = on; }
+  void setAuto(bool on) {
+    auto_ = on;
+    lightOffAt_ = 0;  // only polled in the other mode: don't leave it to go stale there
+  }
   void stopPulse() { pulseUntil_ = 0; }  // a manual stop or auto off ends an auto pulse
+  void abort();                          // before OTA: drop a dose and a pulse at once, no result
   bool autoMode() const { return auto_; }
   void setLightAlways(bool on, uint32_t now);
-  bool lightAlways() const { return lightAlways_; }
   bool dosing() const { return dose_.running(); }
   float dispensed() const { return dose_.dispensed(); }
   bool pirMotion() const { return pirLast_; }

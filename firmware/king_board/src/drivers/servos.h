@@ -12,7 +12,7 @@ void rotorClearTrip();  // an operator action (console stop, button) re-arms the
 bool rotorTripped();
 int rotorUs();
 
-void doorMoveTo(int angle, bool releaseWhenThere = false);
+void doorMoveTo(int angle, bool releaseWhenThere);
 void doorRelease();  // detach and hold the line low
 int doorAngle();
 bool doorClosed();

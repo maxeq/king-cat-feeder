@@ -24,29 +24,28 @@ bool bootCrashed() { return crashed(); }
 
 void rollbackCheck() {
   if (!crashed()) return;
-  int32_t fails = storeGet("bootfail", 0) + 1;
-  storePut("bootfail", fails);
+  int32_t fails = storeGet(Key::BootFail, 0) + 1;
+  storePut(Key::BootFail, fails);  // setup: written at once, before a restart below
   if (fails < MAX_FAILED_BOOTS) return;
 
   const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
   esp_app_desc_t desc;
   if (!other || esp_ota_get_partition_description(other, &desc) != ESP_OK) {
-    Serial.println("rollback: firmware keeps crashing, but there is no other image to go back to");
+    errorf("rollback: firmware keeps crashing, but there is no other image to go back to");
     return;
   }
-  storePut("bootfail", 0);
-  Serial.printf("rollback: %ld crashed boots, switching to %s (%s)\n", (long)fails, other->label,
-                desc.version);
+  storePut(Key::BootFail, 0);
+  errorf("rollback: %ld crashed boots, switching to %s (%s)", (long)fails, other->label, desc.version);
   if (esp_ota_set_boot_partition(other) == ESP_OK) {
     delay(100);
     esp_restart();
   }
 }
 
-void rollbackPoll() {
-  static bool done = false;
-  if (done || millis() < HEALTHY_AFTER_MS) return;
+void rollbackPoll(uint32_t now) {
+  static bool done = false;  // latched, so a millis() wrap doesn't matter
+  if (done || now < HEALTHY_AFTER_MS) return;
   done = true;
-  if (storeGet("bootfail", 0) != 0) say("boot: healthy, crash counter cleared");
-  storePut("bootfail", 0);
+  if (storeGet(Key::BootFail, 0) != 0) say("boot: healthy, crash counter cleared");
+  storePut(Key::BootFail, 0);
 }

@@ -25,8 +25,8 @@ struct Params {  // defaults from config.h; tests shorten them
   uint32_t settle = SETTLE_MS;
   uint32_t window = WEIGH_WINDOW_MS;
   uint32_t catPause = CAT_PAUSE_MS;
-  float confirmTol = 2.0f;  // two weighs this close = food lying still, not a paw
-  float stepMax = 6.0f;     // kibble trickles; a jump this big between two readings is not food
+  float confirmTol = CONFIRM_TOL_G;
+  float stepMax = STEP_MAX_G;
 };
 
 struct Sample {
@@ -35,7 +35,7 @@ struct Sample {
 };
 
 struct Output {
-  int rotorUs;
+  int rotorUs = ROT_STOP;
   bool openDoor = false;  // true once per weighed dose, after the kibble is loosened
   Result result = Result::Running;
   Messages log;
@@ -47,10 +47,13 @@ class Controller {
   void startWeighed(uint32_t now, float startGrams);
   void startTimed(uint32_t now);
   void cancel() { cancelRequested_ = true; }
+  void abort() { phase_ = Phase::Idle; }  // stop dead, no result (the board is about to halt)
   bool running() const { return phase_ != Phase::Idle; }
   bool timed() const { return timed_; }
   bool catOnTray() const { return running() && catPresent_; }
   float dispensed() const { return lastGrams_ - startGrams_; }
+  // food counted by the last full cycle weigh: a light paw that lands later doesn't move it
+  float weighedDispensed() const { return prevGrams_ - startGrams_; }
   // hold = something else is shaking the tray (the door moving): weighing waits
   Output step(uint32_t now, const Sample& s, bool hold = false);
 
@@ -60,7 +63,7 @@ class Controller {
   enum class After { Initial, Cycle, CatPause, Final, Confirm };  // what a weigh is for
   struct Segment {
     int us;
-    uint16_t ms;
+    uint32_t ms;
     bool watchTarget;  // stop early once the tray reaches the target
   };
 
@@ -70,9 +73,10 @@ class Controller {
   void finish(Result r, Output& out);
   void onWeighed(float w, uint32_t now, Output& out);
   void evaluate(float w, float d, uint32_t now, Output& out);
-  bool reached(float grams) const { return grams - startGrams_ >= p_.target - 0.5f; }
+  bool reached(float grams) const { return grams - startGrams_ >= p_.target - TARGET_TOL_G; }
   void pauseForCat(float jump, float level, uint32_t now, Output& out);
   void confirm(float w, uint32_t now);
+  bool scaleQuiet(uint32_t now) const { return now - lastFresh_ > p_.window; }
 
   Params p_;
 
@@ -92,12 +96,12 @@ class Controller {
   int level_ = 0, emptyCycles_ = 0;
 
   static const int MAX_SEGMENTS = 16;
-  Segment prog_[MAX_SEGMENTS];
+  Segment prog_[MAX_SEGMENTS] = {};
   int progLen_ = 0, seg_ = 0;
   uint32_t segStart_ = 0;
 
   After weighFor_ = After::Initial;
-  float samples_[5];
+  float samples_[WEIGH_SAMPLES] = {};
   int nSamples_ = 0;
 };
 

@@ -5,63 +5,121 @@
 // runs as a job there, one at a time. Callers post requests and read the latest
 // result, so a multi-second camera exchange never blocks dosing, the door or the web.
 #include "grove.h"
+#include <Wire.h>
+#include <atomic>
+#include <esp_heap_caps.h>
 #include "../config.h"
+#include "../core/lock.h"
 #include "../core/log.h"
 #include "../core/watchdog.h"
 #include "../core/worker.h"
-#include <Wire.h>
-#include <Seeed_Arduino_SSCMA.h>
-#include <atomic>
-#include "../core/lock.h"
+#include "sscma/Seeed_Arduino_SSCMA.h"  // patched copy: fixed buffers, no spin
 
 static SSCMA AI;
 static const uint8_t GROVE = 0x62;
+static const uint32_t I2C_HZ = 50000;        // no external pull-ups on the bus
+static const uint16_t I2C_TIMEOUT_MS = 200;  // per transfer; Grove stretches the clock
 enum { SS_READ = 0x01, SS_WRITE = 0x02, SS_AVAIL = 0x03 };
+// transport timing, ms: the gap Grove needs between packets. The debug paths (raw AT, scan)
+// keep the slower 3 ms they were tuned with; frames and the library use 2 ms.
+static const int LIB_WAIT_MS = 2;     // passed to the library's begin()
+static const int FRAME_WAIT_MS = 2;   // between packets while reading a frame
+static const int DEBUG_WAIT_MS = 3;   // between packets in the debug paths
+static const int FRAME_POLL_MS = 15;  // nothing available yet: look again after this
+static const int DEBUG_POLL_MS = 30;
+static const int ID_REPLY_MS = 150;    // AT+ID? answers within this
+static const int SCAN_SETTLE_MS = 10;  // after re-pinning the bus for a scan
+static const int BUS_SETTLE_MS = 1;    // after switching the bus pins by hand
 
 static Worker i2c("i2c", 0, 12 * 1024);
-static Mutex resultLock;
-static AiResult latest;      // guarded by resultLock
 static bool online = false;  // worker-owned after groveBegin()
 static std::atomic<int> queued{0};
 
-AiResult aiLatest() {
+// frames: see grove.h
+static const size_t IMG_CAP = 60000;
+static const int BUFS = 3;
+static char* buf[BUFS];      // allocated once in groveBegin(), nullptr if PSRAM is missing
+static size_t bufLen[BUFS];  // guarded by resultLock
+static Mutex resultLock;
+static AiResult latest;  // guarded by resultLock
+static int front = -1;   // the buffer with the latest frame, guarded by resultLock
+static int pinned = -1;  // the buffer a reader is streaming, guarded by resultLock
+static std::atomic<uint32_t> latestAt{0};
+static std::atomic<bool> latestOnline{false};
+
+AiFrame aiPin() {
+  AiFrame f;
   Locked lock(resultLock);
-  return latest;
+  if (!lock) return f;
+  f.result = latest;
+  if (front >= 0) {
+    pinned = front;
+    f.image = buf[front];
+    f.len = bufLen[front];
+  }
+  return f;
 }
 
-AiStatus aiStatus() {
+void aiRelease() {
   Locked lock(resultLock);
-  return {latest.at, latest.online};
+  if (lock) pinned = -1;  // on a timeout the worker just has one buffer fewer to pick from
 }
+
+AiStatus aiStatus() { return {latestAt, latestOnline}; }
 
 bool aiBusy() { return queued > 0; }
 
-static void publish(AiResult&& r) {  // a whole new result: frame and detections together
+uint32_t aiStackFree() { return i2c.stackFree(); }
+
+static int freeBuffer() {  // a buffer neither published nor being streamed, -1 if none
   Locked lock(resultLock);
-  latest = std::move(r);
+  if (!lock) return -1;
+  for (int i = 0; i < BUFS; i++)
+    if (buf[i] && i != front && i != pinned) return i;
+  return -1;
+}
+
+static void publish(const AiResult& r, int b, size_t len) {  // a frame and its detections together
+  Locked lock(resultLock);
+  if (!lock) return;
+  latest = r;
+  if (b >= 0) {
+    bufLen[b] = len;
+    front = b;
+  }
+  latestAt = r.at;
+  latestOnline = r.online;
 }
 
 static void setOnline(bool on) {  // failed request: keep the last good frame, update the status only
   Locked lock(resultLock);
+  if (!lock) return;
   latest.online = on;
+  latestOnline = on;
 }
 
 static void busBegin() {
   Wire.setBufferSize(1024);  // SSCMA packets are 250 B
-  Wire.begin(PIN_AI_SDA, PIN_AI_SCL, 50000);
-  Wire.setTimeOut(200);  // Grove stretches the clock
+  Wire.begin(PIN_AI_SDA, PIN_AI_SCL, I2C_HZ);
+  Wire.setTimeOut(I2C_TIMEOUT_MS);  // each bus transfer
+  Wire.setTimeout(I2C_TIMEOUT_MS);  // and each readBytes() (the Stream timeout, 1 s by default)
 }
 
 void groveBegin() {
-  // no external pull-ups on the bus, hence 50 kHz
   pinMode(PIN_AI_SDA, INPUT_PULLUP);
   pinMode(PIN_AI_SCL, INPUT_PULLUP);
   busBegin();
-  online = AI.begin(&Wire, -1, GROVE, 2, 50000);
-  Serial.println(online ? "Grove Vision AI: online (I2C 0x62)" : "Grove Vision AI: not responding");
+  online = AI.begin(&Wire, -1, GROVE, LIB_WAIT_MS, I2C_HZ);
+  if (online)
+    say("Grove Vision AI: online (I2C 0x62)");
+  else
+    warnf("Grove Vision AI: not responding");
+  for (int i = 0; i < BUFS; i++)
+    buf[i] = (char*)heap_caps_malloc(IMG_CAP + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf[BUFS - 1]) warnf("Grove: no PSRAM for frames, camera views show results only");
   AiResult r;
   r.online = online;
-  publish(std::move(r));
+  publish(r, -1, 0);
   i2c.begin();
 }
 
@@ -83,31 +141,35 @@ static int sscmaAvail(int wait) {
   sscmaCmd(SS_AVAIL, 0, NULL, wait);
   delay(wait);
   Wire.requestFrom(GROVE, (uint8_t)2);
-  return (Wire.read() << 8) | Wire.read();
+  int hi = Wire.read();  // two statements: the order of reads inside one expression is unspecified
+  int lo = Wire.read();
+  return (hi << 8) | lo;
 }
 
-// raw AT over the SSCMA transport, bypassing the library (debug)
-static String rawAT(const char* q, uint32_t ms) {
-  sscmaCmd(SS_WRITE, strlen(q), (const uint8_t*)q, 3);
-  String r;
-  unsigned long t0 = millis();
-  while (millis() - t0 < ms && r.length() < 900) {
+// raw AT over the SSCMA transport, bypassing the library (debug): printable reply into out
+static void rawAT(const char* q, uint32_t ms, char* out, size_t cap) {
+  sscmaCmd(SS_WRITE, (uint16_t)strlen(q), (const uint8_t*)q, DEBUG_WAIT_MS);
+  size_t n = 0;
+  for (uint32_t t0 = millis(); millis() - t0 < ms && n + 1 < cap;) {
     watchdogFeed();
-    int avail = sscmaAvail(3);
+    int avail = sscmaAvail(DEBUG_WAIT_MS);
     if (avail <= 0 || avail > 20000) {
-      delay(30);
+      delay(DEBUG_POLL_MS);
       continue;
     }
-    int n = min(avail, 200);
-    sscmaCmd(SS_READ, n, NULL, 3);
-    delay(3);
-    Wire.requestFrom(GROVE, (uint8_t)n);
+    int chunk = min(avail, 200);
+    sscmaCmd(SS_READ, (uint16_t)chunk, NULL, DEBUG_WAIT_MS);
+    delay(DEBUG_WAIT_MS);
+    Wire.requestFrom(GROVE, (uint8_t)chunk);
     while (Wire.available()) {
-      char c = Wire.read();
-      if (c >= 32 || c == '\n') r += c;
+      char c = (char)Wire.read();
+      if ((c >= 32 || c == '\n') && n + 1 < cap) out[n++] = c;
     }
   }
-  return r.length() ? r : "(silence)";
+  if (!n)
+    strlcpy(out, "(silence)", cap);
+  else
+    out[n] = 0;
 }
 
 // unstick the bus: 16 SCL clocks + STOP
@@ -115,7 +177,7 @@ static void aiRecover() {
   Wire.end();
   pinMode(PIN_AI_SDA, INPUT_PULLUP);
   pinMode(PIN_AI_SCL, INPUT_PULLUP);
-  delay(1);
+  delay(BUS_SETTLE_MS);
   int sda = digitalRead(PIN_AI_SDA), scl = digitalRead(PIN_AI_SCL);
   pinMode(PIN_AI_SCL, OUTPUT_OPEN_DRAIN);
   for (int i = 0; i < 16; i++) {
@@ -132,9 +194,8 @@ static void aiRecover() {
   digitalWrite(PIN_AI_SDA, HIGH);
   delayMicroseconds(20);
   pinMode(PIN_AI_SDA, INPUT_PULLUP);
-  delay(1);
-  say("AI: bus recovery (before: SDA=" + String(sda) + " SCL=" + String(scl) +
-      ", after: SDA=" + String(digitalRead(PIN_AI_SDA)) + ")");
+  delay(BUS_SETTLE_MS);
+  sayf("AI: bus recovery (before: SDA=%d SCL=%d, after: SDA=%d)", sda, scl, digitalRead(PIN_AI_SDA));
   busBegin();
 }
 
@@ -148,37 +209,47 @@ static bool aiPresent() {
   return false;
 }
 
-// AT+SAMPLE=1 returns one base64 jpeg, ~15 KB.
-// Takes seconds at 50 kHz, so preview only.
-static String aiSample(uint32_t ms) {
+// AT+SAMPLE=1 returns one base64 jpeg, ~15 KB, inside a JSON reply. Reads the reply into
+// buf[b], then moves the image to the start of it. Takes seconds at 50 kHz: preview only.
+static size_t aiSample(int b, uint32_t ms) {
+  char* out = buf[b];
   const char* q = "AT+SAMPLE=1\r\n";
-  sscmaCmd(SS_WRITE, strlen(q), (const uint8_t*)q, 2);
-  String r;
-  r.reserve(40000);
-  unsigned long t0 = millis();
-  while (millis() - t0 < ms && r.length() < 60000) {
+  sscmaCmd(SS_WRITE, (uint16_t)strlen(q), (const uint8_t*)q, FRAME_WAIT_MS);
+  size_t n = 0;
+  out[0] = 0;
+  uint32_t t0 = millis();
+  while (millis() - t0 < ms && n < IMG_CAP) {
     watchdogFeed();
-    int avail = sscmaAvail(2);
-    if (avail <= 0 || avail > 60000) {
-      if (r.indexOf("\"image\"") > 0 && r.endsWith("\n")) break;
-      delay(15);
+    int avail = sscmaAvail(FRAME_WAIT_MS);
+    if (avail <= 0 || avail > (int)IMG_CAP) {
+      out[n] = 0;
+      if (n && out[n - 1] == '\n' && strstr(out, "\"image\"")) break;  // the whole reply is in
+      delay(FRAME_POLL_MS);
       continue;
     }
-    while (avail > 0) {
+    while (avail > 0 && n < IMG_CAP && millis() - t0 < ms) {  // the deadline holds mid-burst too
       watchdogFeed();
-      int n = min(avail, 250);
-      sscmaCmd(SS_READ, n, NULL, 2);
-      delay(2);
-      Wire.requestFrom(GROVE, (uint8_t)n);
-      while (Wire.available())
-        r += (char)Wire.read();
-      avail -= n;
+      int chunk = min(avail, (int)MAX_PL_LEN);
+      sscmaCmd(SS_READ, (uint16_t)chunk, NULL, FRAME_WAIT_MS);
+      delay(FRAME_WAIT_MS);
+      Wire.requestFrom(GROVE, (uint8_t)chunk);
+      while (Wire.available()) {
+        char c = (char)Wire.read();
+        if (n < IMG_CAP) out[n++] = c;
+      }
+      avail -= chunk;
     }
   }
-  int k = r.indexOf("\"image\"");
-  if (k < 0) return "";
-  int s = r.indexOf('"', r.indexOf(':', k) + 1) + 1, e = r.indexOf('"', s);
-  return e > s ? r.substring(s, e) : "";
+  out[n] = 0;
+  const char* key = strstr(out, "\"image\"");
+  const char* colon = key ? strchr(key, ':') : nullptr;
+  const char* s = colon ? strchr(colon + 1, '"') : nullptr;
+  const char* e = s ? strchr(s + 1, '"') : nullptr;
+  if (!e) return 0;
+  size_t len = (size_t)(e - s - 1);
+  memmove(out, s + 1, len);
+  out[len] = 0;
+  return len;
 }
 
 // inference on the current frame; fills r, logs, false if Grove didn't answer
@@ -191,7 +262,7 @@ static bool invoke(AiResult& r) {
     return false;
   }
   if (!online) {
-    online = AI.begin(&Wire, -1, GROVE, 2, 50000);
+    online = AI.begin(&Wire, -1, GROVE, LIB_WAIT_MS, I2C_HZ);
     if (!online) {
       r.online = false;
       say("AI: not responding");
@@ -199,72 +270,80 @@ static bool invoke(AiResult& r) {
     }
   }
   r.online = true;
-  unsigned long t0 = millis();
+  uint32_t t0 = millis();
   // invoke(n, filter, show): filter=true gives results only.
   // With the jpeg attached the reply is too big and times out.
+  // each library call is bounded (two waits of ~1 s plus one capped read pass each), and the
+  // watchdog is fed between them, so a sick bus can't stretch the job past it
   int rc = AI.invoke(1, true, false);
+  watchdogFeed();
   if (rc != CMD_OK) rc = AI.invoke(1, true, false);
+  watchdogFeed();
   if (rc != CMD_OK) {
-    say("AI: invoke err " + String(rc) +
-        " | raw reply: " + rawAT("AT+INVOKE=1,1,0\r\n", 3000).substring(0, 250));
+    char raw[256];
+    rawAT("AT+INVOKE=1,1,0\r\n", AI_RAW_TIMEOUT_MS, raw, sizeof(raw));
+    warnf("AI: invoke err %d | raw reply: %s", rc, raw);
     return false;
   }
-  String v = "";
-  r.count = AI.boxes().size();
-  for (auto& b : AI.boxes())
+  size_t n = 0;
+  r.verdict[0] = 0;
+  r.count = (int)AI.boxes().size();
+  for (auto& b : AI.boxes()) {
     r.best = max(r.best, (int)b.score);
-  for (auto& b : AI.boxes())
-    v += "box[cls " + String(b.target) + " " + String(b.score) + "% @" + String(b.x) + "," + String(b.y) +
-         "] ";
+    if (n < sizeof(r.verdict))
+      n += (size_t)snprintf(r.verdict + n, sizeof(r.verdict) - n, "box[cls %d %d%% @%d,%d] ", b.target,
+                            b.score, b.x, b.y);
+  }
   for (auto& c : AI.classes())
-    v += "class[cls " + String(c.target) + " " + String(c.score) + "%] ";
-  if (!v.length()) v = "empty (nothing detected)";
-  r.verdict = v;
-  say("AI (" + String(millis() - t0) + "ms): " + v);
+    if (n < sizeof(r.verdict))
+      n += (size_t)snprintf(r.verdict + n, sizeof(r.verdict) - n, "class[cls %d %d%%] ", c.target, c.score);
+  if (!r.verdict[0]) strlcpy(r.verdict, "empty (nothing detected)", sizeof(r.verdict));
+  sayf("AI (%lums): %s", (unsigned long)(millis() - t0), r.verdict);
   return true;
 }
 
 // --- jobs: run on the i2c worker ---
 
 // publish only when the frame and its detections come from the same exchange
-static void finish(AiResult& r, String&& img, bool ok, unsigned long t0) {
-  if (!ok || !img.length()) {
+static void finish(AiResult& r, int b, size_t len, bool ok, uint32_t t0) {
+  bool images = buf[BUFS - 1] != nullptr;  // without PSRAM the views show results only
+  if (!ok || (images && !len)) {
     setOnline(r.online);
     return;
   }
-  r.image = std::move(img);
   r.ms = millis() - t0;
-  r.at = millis();
-  publish(std::move(r));
+  r.at = millis() | 1;  // 0 means "never"
+  publish(r, len ? b : -1, len);
 }
 
 static void frameJob(int) {  // snapshot + inference, for the camera views
-  unsigned long t0 = millis();
+  uint32_t t0 = millis();
   AiResult r;
-  String img;
+  int b = freeBuffer();
+  size_t len = 0;
   bool ok = false;
   if (aiPresent()) {
-    img = aiSample(4000);
+    if (b >= 0) len = aiSample(b, AI_FRAME_TIMEOUT_MS);
     ok = invoke(r);
   } else {
     r.online = online = false;
   }
-  finish(r, std::move(img), ok, t0);
+  finish(r, b, len, ok, t0);
   queued--;
 }
 
-static void invokeJob(int) {  // console 'v': inference, plus its frame if Grove attached one
-  unsigned long t0 = millis();
+static void invokeJob(int) {  // console 'v': inference only, the result goes to the log
   AiResult r;
-  bool ok = invoke(r);
-  finish(r, AI.last_image(), ok, t0);
+  invoke(r);
+  setOnline(r.online);
   queued--;
 }
 
 static void snapshotJob(int) {
   bool ok = aiPresent();
-  String im = ok ? aiSample(4000) : "";
-  say("AI: snapshot " + String(ok ? "" : "(not on bus) ") + String(im.length()) + " chars");
+  int b = freeBuffer();
+  size_t len = ok && b >= 0 ? aiSample(b, AI_FRAME_TIMEOUT_MS) : 0;
+  sayf("AI: snapshot %s%u chars", ok ? "" : "(not on bus) ", (unsigned)len);
   queued--;
 }
 
@@ -274,7 +353,7 @@ static void request(Worker::Job job, const char* what) {
   queued++;
   if (i2c.post(job)) return;
   queued--;
-  say(String("AI: queue full, ") + what + " dropped");
+  warnf("AI: queue full, %s dropped", what);
 }
 
 void aiRequestFrame() {
@@ -291,44 +370,45 @@ static void scanJob(int) {
     Wire.end();
     pinMode(sda, INPUT_PULLUP);
     pinMode(scl, INPUT_PULLUP);
-    Wire.begin(sda, scl, 100000);
-    delay(10);
+    Wire.begin(sda, scl, AI_SCAN_HZ);
+    delay(SCAN_SETTLE_MS);
     int found = 0;
     for (uint8_t a = 1; a < 127; a++) {
-      watchdogFeed();  // each probe can take the full 200 ms timeout on a stuck bus
+      watchdogFeed();  // each probe can take the full I2C timeout on a stuck bus
       Wire.beginTransmission(a);
       if (Wire.endTransmission() == 0) {
-        say("  SDA=" + String(sda) + " SCL=" + String(scl) + ": 0x" + String(a, HEX) +
-            (a == GROVE ? "  <-- GROVE!" : ""));
+        sayf("  SDA=%d SCL=%d: 0x%02X%s", sda, scl, a, a == GROVE ? "  <-- GROVE!" : "");
         found++;
       }
     }
-    if (!found) say("  SDA=" + String(sda) + " SCL=" + String(scl) + ": empty");
+    if (!found) sayf("  SDA=%d SCL=%d: empty", sda, scl);
   }
   say("scan done");
   Wire.end();
   busBegin();
 
   const char* q = "AT+ID?\r\n";
-  int e1 = sscmaCmd(SS_WRITE, strlen(q), (const uint8_t*)q, 3);
-  delay(150);
-  int e2 = sscmaCmd(SS_AVAIL, 0, NULL, 3);
-  delay(3);
+  int e1 = sscmaCmd(SS_WRITE, (uint16_t)strlen(q), (const uint8_t*)q, DEBUG_WAIT_MS);
+  delay(ID_REPLY_MS);
+  int e2 = sscmaCmd(SS_AVAIL, 0, NULL, DEBUG_WAIT_MS);
+  delay(DEBUG_WAIT_MS);
   Wire.requestFrom(GROVE, (uint8_t)2);
   int hi = Wire.read(), lo = Wire.read();
   int avail = (hi << 8) | lo;
-  say("raw: write=" + String(e1) + " availreq=" + String(e2) + " avail=" + String(avail));
+  sayf("raw: write=%d availreq=%d avail=%d", e1, e2, avail);
   if (avail > 0 && avail < 1000) {
     int n = min(avail, 240);
-    sscmaCmd(SS_READ, n, NULL, 3);
-    delay(3);
+    sscmaCmd(SS_READ, (uint16_t)n, NULL, DEBUG_WAIT_MS);
+    delay(DEBUG_WAIT_MS);
     Wire.requestFrom(GROVE, (uint8_t)n);
-    String r;
+    char r[241];
+    int k = 0;
     while (Wire.available()) {
-      char c = Wire.read();
-      if (c >= 32 || c == '\n') r += c;
+      char c = (char)Wire.read();
+      if ((c >= 32 || c == '\n') && k < 240) r[k++] = c;
     }
-    say("raw reply: " + r.substring(0, 200));
+    r[k] = 0;
+    sayf("raw reply: %s", r);
   }
   queued--;
 }

@@ -1,6 +1,5 @@
 #pragma once
 #include <Arduino.h>
-#include <atomic>
 
 // One background task per resource, with its own job queue (the "active object"
 // pattern). A device that needs seconds per exchange, like the camera on the I2C
@@ -14,7 +13,7 @@ class Worker {
   Worker(const char* name, int core, uint32_t stackBytes, int queueDepth = 4);
   void begin();
   bool post(Job job, int arg = 0);  // false if the queue is full
-  bool busy() const { return pending_ > 0; }
+  uint32_t stackFree() const;       // smallest free stack since start, bytes (0 before begin())
 
  private:
   struct Item {
@@ -28,5 +27,5 @@ class Worker {
   uint32_t stack_;
   int depth_;
   QueueHandle_t queue_ = nullptr;
-  std::atomic<int> pending_{0};
+  TaskHandle_t task_ = nullptr;
 };

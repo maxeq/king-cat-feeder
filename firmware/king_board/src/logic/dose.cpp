@@ -45,7 +45,8 @@ void Controller::startWeighed(uint32_t now, float startGrams) {
   startGrams_ = prevGrams_ = lastGrams_ = startGrams;
   level_ = emptyCycles_ = 0;
   // loosen the kibble before the first weigh
-  static const Segment shake[] = {{ROT_FWD, 1000, false}, {ROT_BACK, 1000, false}, {ROT_FWD, 1000, false}};
+  static const Segment shake[] = {
+      {ROT_FWD, SHAKE_MS, false}, {ROT_BACK, SHAKE_MS, false}, {ROT_FWD, SHAKE_MS, false}};
   program_ = Program::Shake;
   load(shake, 3, now);
 }
@@ -53,11 +54,14 @@ void Controller::startWeighed(uint32_t now, float startGrams) {
 void Controller::startTimed(uint32_t now) {
   timed_ = true;
   cancelRequested_ = false;
+  lastFresh_ = now;
   pending_ = Result::Running;
   t0_ = now;
   startGrams_ = prevGrams_ = lastGrams_ = 0;
-  static const Segment timed[] = {
-      {ROT_BACK, 1000, false}, {ROT_FWD, 1000, false}, {ROT_FWD, 3000, false}, {ROT_BACK, 3000, false}};
+  static const Segment timed[] = {{ROT_BACK, TIMED_KNOCK_MS, false},
+                                  {ROT_FWD, TIMED_KNOCK_MS, false},
+                                  {ROT_FWD, TIMED_RUN_MS, false},
+                                  {ROT_BACK, TIMED_RUN_MS, false}};
   program_ = Program::Timed;
   load(timed, 4, now);
 }
@@ -66,43 +70,44 @@ void Controller::loadCycle(uint32_t now, Messages& log) {
   program_ = Program::Cycle;
   switch (level_) {
     case 0: {  // normal: unload, then a slow feed
-      static const Segment s[] = {{ROT_BACK, 500, true}, {ROT_FWD_SLOW, 6000, true}};
+      static const Segment s[] = {{ROT_BACK, UNLOAD_MS, true}, {ROT_FWD_SLOW, FEED_SLOW_MS, true}};
       load(s, 2, now);
       break;
     }
     case 1: {
       log.add("  escalation 1: rocking");
-      static const Segment s[] = {{ROT_BACK, 1000, false},
-                                  {ROT_FWD, 2000, true},
-                                  {ROT_BACK, 1000, false},
-                                  {ROT_FWD, 2000, true},
-                                  {ROT_FWD_SLOW, 4000, true}};
+      static const Segment s[] = {{ROT_BACK, ROCK_BACK_MS, false},
+                                  {ROT_FWD, ROCK_FWD_MS, true},
+                                  {ROT_BACK, ROCK_BACK_MS, false},
+                                  {ROT_FWD, ROCK_FWD_MS, true},
+                                  {ROT_FWD_SLOW, PUSH_SLOW_MS, true}};
       load(s, 5, now);
       break;
     }
     case 2: {
       log.add("  escalation 2: jackhammer");
-      Segment s[14];
-      for (int i = 0; i < 6; i++) {
-        s[2 * i] = {ROT_FWD, 300, false};
-        s[2 * i + 1] = {ROT_BACK, 300, false};
+      Segment s[2 * HAMMER_KNOCKS + 2];
+      for (size_t i = 0; i < (size_t)HAMMER_KNOCKS; i++) {
+        s[2 * i] = {ROT_FWD, HAMMER_MS, false};
+        s[2 * i + 1] = {ROT_BACK, HAMMER_MS, false};
       }
-      s[12] = {ROT_BACK, 1000, false};
-      s[13] = {ROT_FWD_SLOW, 4000, true};
-      load(s, 14, now);
+      const size_t end = 2 * (size_t)HAMMER_KNOCKS;
+      s[end] = {ROT_BACK, ROCK_BACK_MS, false};
+      s[end + 1] = {ROT_FWD_SLOW, PUSH_SLOW_MS, true};
+      load(s, 2 * HAMMER_KNOCKS + 2, now);
       break;
     }
     default: {
       log.add("  escalation 3: long reverse + push through");
-      Segment s[11];
-      s[0] = {ROT_BACK, 4000, false};
-      for (int i = 0; i < 4; i++) {
-        s[1 + 2 * i] = {ROT_FWD, 250, false};
-        s[2 + 2 * i] = {ROT_BACK, 250, false};
+      Segment s[2 * KNOCKS + 3];
+      s[0] = {ROT_BACK, LONG_REVERSE_MS, false};
+      for (size_t i = 0; i < (size_t)KNOCKS; i++) {
+        s[1 + 2 * i] = {ROT_FWD, KNOCK_MS, false};
+        s[2 + 2 * i] = {ROT_BACK, KNOCK_MS, false};
       }
-      s[9] = {ROT_FWD, 2000, true};
-      s[10] = {ROT_FWD_SLOW, 4000, true};
-      load(s, 11, now);
+      s[2 * KNOCKS + 1] = {ROT_FWD, ROCK_FWD_MS, true};
+      s[2 * KNOCKS + 2] = {ROT_FWD_SLOW, PUSH_SLOW_MS, true};
+      load(s, 2 * KNOCKS + 3, now);
       break;
     }
   }
@@ -168,8 +173,8 @@ void Controller::pauseForCat(float jump, float level, uint32_t now, Output& out)
     out.log.add("  scale: jump +%.1f g — object on tray? pause until it leaves", jump);
     catLevel_ = level;
     // scale noise at rest is ~0.2 g, so a light paw can be caught leaving by a small drop
-    float leave = 0.7f * jump;
-    catLeave_ = leave < 0.5f ? 0.5f : leave > p_.stepMax / 2 ? p_.stepMax / 2 : leave;
+    float leave = CAT_LEAVE_SHARE * jump;
+    catLeave_ = leave < CAT_LEAVE_MIN_G ? CAT_LEAVE_MIN_G : leave > p_.stepMax / 2 ? p_.stepMax / 2 : leave;
   } else if (level > catLevel_) {
     catLevel_ = level;
   }
@@ -194,9 +199,9 @@ void Controller::evaluate(float w, float d, uint32_t now, Output& out) {
   if (d >= p_.cycleMin) {
     level_ = 0;
     emptyCycles_ = 0;
-  } else if (++emptyCycles_ >= 2) {
+  } else if (++emptyCycles_ >= EMPTY_CYCLES_TO_ESCALATE) {
     emptyCycles_ = 0;
-    if (++level_ > 3) {
+    if (++level_ > MAX_ESCALATION) {
       finish(Result::Jammed, out);
       return;
     }
@@ -283,7 +288,7 @@ Output Controller::step(uint32_t now, const Sample& s, bool hold) {
     startWeigh(After::Final, now);
   }
   if (now - t0_ >= p_.timeout + p_.settle + p_.window) {  // backstop: never outlive the timeout
-    finish(catPresent_ ? Result::CatBlocked : Result::Timeout, out);
+    finish(catPresent_ ? Result::CatBlocked : scaleQuiet(now) ? Result::ScaleFault : Result::Timeout, out);
     return out;
   }
   bool confirming = phase_ == Phase::Weigh && weighFor_ == After::Confirm;  // let a confirm finish
@@ -323,16 +328,16 @@ Output Controller::step(uint32_t now, const Sample& s, bool hold) {
       out.rotorUs = prog_[seg_].us;
       break;
     }
-    case Phase::Weigh: {  // rotor stopped: settle, then collect up to 5 samples
+    case Phase::Weigh: {  // rotor stopped: settle, then collect up to WEIGH_SAMPLES samples
       if (hold) {         // the tray is shaking: start settling over
         phaseStart_ = now;
         nSamples_ = 0;
       }
       uint32_t t = now - phaseStart_;
       if (t < p_.settle) break;
-      if (s.fresh && nSamples_ < 5) samples_[nSamples_++] = s.grams;
-      if (nSamples_ < 5 && t < p_.settle + p_.window) break;
-      if (nSamples_ >= 3) {
+      if (s.fresh && nSamples_ < WEIGH_SAMPLES) samples_[nSamples_++] = s.grams;
+      if (nSamples_ < WEIGH_SAMPLES && t < p_.settle + p_.window) break;
+      if (nSamples_ >= WEIGH_MIN_SAMPLES) {
         float lo = samples_[0], hi = samples_[0];
         for (int i = 1; i < nSamples_; i++) {
           lo = samples_[i] < lo ? samples_[i] : lo;
@@ -348,14 +353,14 @@ Output Controller::step(uint32_t now, const Sample& s, bool hold) {
           }
         }
         onWeighed(median(samples_, nSamples_), now, out);
-      } else if (weighFor_ == After::Final)
+      } else if (weighFor_ == After::Final && pending_ == Result::Cancelled)
         finish(pending_, out);  // the outcome is known; report the last reading
-      else
+      else  // a silent scale can't confirm a target or a timeout: a scale fault, evidence first
         finish(Result::ScaleFault, out);
       break;
     }
-    case Phase::CatPause:                  // wait for the load to start leaving, then weigh again
-      if (now - lastFresh_ > p_.window) {  // the scale went quiet: we'd wait for the cat forever
+    case Phase::CatPause:     // wait for the load to start leaving, then weigh again
+      if (scaleQuiet(now)) {  // the scale went quiet: we'd wait for the cat forever
         finish(Result::ScaleFault, out);
         return out;
       }

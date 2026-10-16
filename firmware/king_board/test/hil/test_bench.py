@@ -1,6 +1,7 @@
 """Checks a running King board end to end: version, web, console, and that slow
 work (the camera) never blocks the rest. See conftest.py for how to run."""
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,36 @@ def test_health_words(board):
     assert h["overruns"] == 0
     s = board.status()
     assert s["FAULTS"].startswith(f"0x{h['faults']:04X}")
+
+
+def test_health_reports_every_margin(board):
+    h = board.json("/health")
+    assert h["valid"] and h["resetReason"]
+    for task, free in h["stackFree"].items():
+        assert free >= 512, f"{task} task is close to a stack overflow: {free} bytes left"
+    assert h["heapMaxBlock"] >= 16 * 1024, "largest free heap block is small: fragmentation?"
+    assert h["logDropped"] == 0, "log lines were lost"
+    assert h["lockTimeouts"] == 0
+    assert h["errors"] == 0, "the board logged an error: see /log (lines start with !!)"
+
+
+def test_state_changes_need_post_and_the_header(board):
+    assert board.get("/light?m=pir")[0] == 403  # GET
+    assert board.get("/light?m=pir", method="POST")[0] == 403  # no X-King
+    assert board.get("/light?m=pir", method="POST", headers={"X-King": "1"})[0] == 200
+    assert board.json("/bright")["pct"] >= 0  # reading needs no POST
+
+
+def test_telnet_needs_the_password(board):
+    with board.telnet(password="not-the-password") as s:
+        s.sendall(b"?")
+        time.sleep(0.5)
+        s.settimeout(1.0)
+        try:
+            out = s.recv(4096).decode("utf-8", "replace")
+        except TimeoutError:
+            out = ""
+    assert "IP " not in out, "telnet ran a command without the password"
 
 
 def test_console_reports_version_and_heap(board):

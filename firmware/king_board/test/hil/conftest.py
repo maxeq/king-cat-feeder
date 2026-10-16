@@ -40,10 +40,11 @@ def pytest_collection_modifyitems(config, items):
 class Board:
     def __init__(self, host, user, password):
         self.host = host
+        self.password = password  # the web password, which telnet asks for too
         self.auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
-    def get(self, path, auth=True, timeout=5.0):
-        req = urllib.request.Request(f"http://{self.host}{path}")
+    def get(self, path, auth=True, timeout=5.0, method="GET", headers=None):
+        req = urllib.request.Request(f"http://{self.host}{path}", method=method, headers=headers or {})
         if auth:
             req.add_header("Authorization", self.auth)
         t0 = time.monotonic()
@@ -66,10 +67,18 @@ class Board:
             out[key.strip()] = value.strip()
         return out
 
+    def telnet(self, password=None):
+        """A logged-in telnet socket (password prompt answered, banner read)."""
+        s = socket.create_connection((self.host, 23), timeout=5)
+        s.recv(256)  # "password:" prompt
+        s.sendall(((self.password if password is None else password) + "\n").encode())
+        time.sleep(0.3)
+        s.recv(512)  # banner, or "wrong password"
+        return s
+
     def command(self, keys, settle=0.3):
         """Send one-letter console commands over telnet and return what the board printed."""
-        with socket.create_connection((self.host, 23), timeout=5) as s:
-            s.recv(256)  # banner
+        with self.telnet() as s:
             s.sendall(keys.encode())
             time.sleep(settle)
             s.settimeout(1.0)

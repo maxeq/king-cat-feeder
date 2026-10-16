@@ -1,12 +1,12 @@
 #include "pir.h"
+#include <Arduino.h>
+#include "../clock.h"
 #include "../config.h"
 #include "../core/log.h"
-#include "../clock.h"
-#include <Arduino.h>
 
 static bool level = false;
 static int testStep = 0;  // 0 = no test running
-static uint32_t testAt = 0;
+static Deadline testStepDone;
 static int up = 0;
 
 void pirBegin() { pinMode(PIN_PIR, INPUT); }
@@ -19,7 +19,7 @@ bool pirRaw() { return level; }
 void pirSelfTest(uint32_t now) {
   pinMode(PIN_PIR, INPUT_PULLUP);
   testStep = 1;
-  testAt = now + 50;
+  testStepDone.start(now, PIR_TEST_STEP_MS);
 }
 
 void pirTick(uint32_t now) {
@@ -27,20 +27,20 @@ void pirTick(uint32_t now) {
     level = digitalRead(PIN_PIR);
     return;
   }
-  if (!due(now, testAt)) return;
+  if (!testStepDone.expired(now)) return;
   if (testStep == 1) {
     up = digitalRead(PIN_PIR);
     pinMode(PIN_PIR, INPUT_PULLDOWN);
     testStep = 2;
-    testAt = now + 50;
+    testStepDone.start(now, PIR_TEST_STEP_MS);
     return;
   }
   int dn = digitalRead(PIN_PIR);
   pinMode(PIN_PIR, INPUT);
   testStep = 0;
-  say("PIR self-test: pullup=" + String(up) + " pulldown=" + String(dn) +
-      (up == 1 && dn == 0   ? " — PIN OK (cable/module at fault)"
-       : up == 1 && dn == 1 ? " — something HOLDS the pin high"
-       : up == 0            ? " — something PULLS the pin low (cable?)"
-                            : " — odd"));
+  sayf("PIR self-test: pullup=%d pulldown=%d%s", up, dn,
+       up == 1 && dn == 0   ? " - PIN OK (cable/module at fault)"
+       : up == 1 && dn == 1 ? " - something HOLDS the pin high"
+       : up == 0            ? " - something PULLS the pin low (cable?)"
+                            : " - odd");
 }

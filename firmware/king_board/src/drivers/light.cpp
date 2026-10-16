@@ -1,16 +1,17 @@
 #include "light.h"
+#include <Arduino.h>
+#include "../clock.h"
 #include "../config.h"
 #include "../core/store.h"
-#include <Arduino.h>
 
-static int level = 0, maxLevel = 51;
+static int level = 0, maxLevel = LIGHT_DEFAULT_LEVEL;
 static int rampFrom = 0, rampTo = 0;
 static uint32_t rampStart = 0;
 static bool ramping = false;
 
 void lightBegin() {
-  maxLevel = storeGet("light", maxLevel);
-  ledcAttachChannel(PIN_LED, 5000, 8, LED_CH);
+  maxLevel = storeGet(Key::Light, maxLevel);
+  ledcAttachChannel(PIN_LED, LED_FREQ_HZ, LED_BITS, LED_CH);
   ledcWriteChannel(LED_CH, 0);
 }
 
@@ -33,7 +34,7 @@ void lightCut() {
 
 void lightSetPct(int pct) {
   maxLevel = constrain(pct, 0, 100) * 255 / 100;
-  storePut("light", maxLevel);
+  storePut(Key::Light, maxLevel);  // queued to the nvs worker
   if (level > 0 || rampTo > 0) rampTo_(maxLevel);
 }
 
@@ -42,12 +43,12 @@ int lightMaxLevel() { return maxLevel; }
 
 void lightTick(uint32_t now) {
   if (!ramping) return;
-  uint32_t t = now - rampStart;
+  uint32_t t = elapsed(now, rampStart);  // a ramp started mid-tick is stamped after `now`
   if (t >= LIGHT_RAMP_MS) {
     level = rampTo;
     ramping = false;
   } else {
     level = rampFrom + (rampTo - rampFrom) * (int)t / (int)LIGHT_RAMP_MS;
   }
-  ledcWriteChannel(LED_CH, level);
+  ledcWriteChannel(LED_CH, (uint32_t)level);
 }

@@ -6,14 +6,15 @@
 //   src/app      the control task: 10 ms tick on core 1, owns all actuators and sensors
 //   src/drivers  hardware: servos, scale, light, PIR, button, indicator, grove
 //   src/net      Wi-Fi, web + OTA, telnet console: runs in loop(), sends commands
-//   src/core     logging, NVS store, watchdog, OTA rollback, workers, locks
+//   src/core     logging, NVS store (its own worker), watchdog, OTA rollback, workers, locks
 //
 // Tasks:
 //   control  core 1, priority 5   rotor, door, scale, light, button, PIR, feeder FSM
 //   loop     core 1, priority 1   web, OTA, telnet, log output (this file's loop())
 //   i2c      core 0, priority 1   Grove camera exchanges, seconds each
+//   nvs      core 0, priority 1   NVS writes (milliseconds each, never in the control tick)
 //
-// Serial / telnet (nc <ip> 23):
+// Serial / telnet (nc <ip> 23, asks for the web password):
 //   a/A auto off/on   f/b/s, 1..9 rotor   o/c/q, </> door   L/l light
 //   p/T PIR   g I2C scan   v/S grove   w/r/t scale   I/i indicator   ? status
 
@@ -43,12 +44,13 @@ void setup() {
 
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);  // with no one reading the USB port, drop output instead of blocking
-  delay(1500);
+  delay(USB_SETTLE_MS);      // give a serial monitor time to attach and catch the boot lines
   logBegin();
-  Serial.println("King board " FW_VERSION " (" FW_GIT ", built " FW_BUILT ")");
-  say(String("last reset: ") + resetReason());  // also lands in the web log
+  say("King board " FW_VERSION " (" FW_GIT ", built " FW_BUILT ")");  // also lands in the web log
+  sayf("last reset: %s", resetReason());
   storeBegin();
   rollbackCheck();  // may switch back to the previous firmware after repeated crashes
+  storeRun();       // from here on NVS writes go to the nvs worker
   watchdogBegin(WATCHDOG_S);
 
   groveBegin();  // starts the i2c worker
@@ -68,7 +70,7 @@ void setup() {
   wifiBegin();
   watchdogSubscribe();  // the loop task, after the slow Wi-Fi start
 
-  Serial.println("=== KING BOARD: a/A auto | f/b/s,1..9 | o/c/q | L/l | p | g | ? ===");
+  say("=== KING BOARD: a/A auto | f/b/s,1..9 | o/c/q | L/l | p | g | ? ===");
 }
 
 // the network task: everything here may be slow, none of it touches hardware
@@ -79,6 +81,5 @@ void loop() {
   wifiPoll();
   heartbeat();
   consolePoll();
-  rollbackPoll();
   delay(1);
 }

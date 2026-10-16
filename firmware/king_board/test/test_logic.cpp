@@ -2,9 +2,7 @@
 // driven by a simulated rotor and scale. Build and run:
 //   g++ -std=c++17 -Wall -Wextra -I src test/test_logic.cpp src/logic/*.cpp -o /tmp/test_logic &&
 //   /tmp/test_logic
-#include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <functional>
 #include <string>
 
@@ -148,6 +146,17 @@ static void testTimeout() {
   CHECK(sim.now >= p.timeout);
   CHECK(sim.now < p.timeout + SETTLE_MS + WEIGH_WINDOW_MS + 100);
   CHECK(sim.log.find("escalation 1") == std::string::npos);
+}
+
+static void testScaleDiesAtTheTimeout() {
+  std::printf("a scale that goes quiet at the timeout is a scale fault, not 'no food'\n");
+  Sim sim;
+  sim.rate = 0.4f;  // slow enough to reach the timeout
+  dose::Params p;
+  p.timeout = 20000;
+  sim.deadFrom = p.timeout - 200;  // dies just before the final weigh
+  CHECK(runDose(sim, false, {}, p) == dose::Result::ScaleFault);
+  CHECK(sim.rotorUs == ROT_STOP);
 }
 
 static void testCatOnTrayIsNotFood() {
@@ -424,6 +433,10 @@ static void testRandomizedDoses() {
     expect(r != dose::Result::CatBlocked || catNow || pawNow > 0, "cat blocked with nothing on the tray");
     expect(r != dose::Result::Reached || !catNow, "reached with the cat on the tray");
     expect(!overflow, "a step filled the log buffer, lines may be lost");
+    // dead through the whole last weigh: the scale can't have seen a timeout or a jam
+    bool deadAtEnd = scaleDies && (int32_t)(sim.now - sim.deadFrom) > (int32_t)(SETTLE_MS + WEIGH_WINDOW_MS);
+    expect(!deadAtEnd || (r != dose::Result::Timeout && r != dose::Result::Jammed),
+           "a dead scale reported as no food");
     reached += r == dose::Result::Reached;
     jammed += r == dose::Result::Jammed;
     faults += r == dose::Result::ScaleFault;
@@ -433,7 +446,8 @@ static void testRandomizedDoses() {
   }
   std::printf("  reached %d, jammed %d, scale fault %d, cancelled %d, timeout %d, cat blocked %d\n", reached,
               jammed, faults, cancelled, timeouts, catBlocked);
-  CHECK(reached > 0 && jammed > 0 && faults > 0 && cancelled > 0);  // every outcome was exercised
+  // every outcome was exercised, so none of them can silently stop happening
+  CHECK(reached > 0 && jammed > 0 && faults > 0 && cancelled > 0 && timeouts > 0 && catBlocked > 0);
 }
 
 // --- feeder FSM ---
@@ -457,7 +471,6 @@ struct Bench {
     in.scaleOk = !sim.scaleDead;
     in.grams = sim.grams;
     in.sample = sim.sample();
-    in.lightLevel = light;
     feeder::Outputs o = fsm.step(in);
     if (o.rotorUs >= 0) sim.rotorUs = o.rotorUs;
     if (o.door == feeder::Door::Open) doorClosed = false;
@@ -470,8 +483,8 @@ struct Bench {
     sim.advance();
     return o;
   }
-  void run(uint32_t ms, bool pir = false) {
-    for (uint32_t end = sim.now + ms; sim.now < end;)
+  void run(uint32_t ms, bool pir = false) {  // counts ticks, so it works across the millis() wrap
+    for (uint32_t t = 0; t < ms; t += CONTROL_TICK_MS)
       tick(false, pir);
   }
 };
@@ -617,6 +630,164 @@ static void testFsmLongUptime() {
   CHECK(b.light > 0);
 }
 
+static void testFsmNearTheFullWrap() {
+  std::printf("fsm: a dose and the PIR light work across the 2^32 wrap\n");
+  Bench b;
+  b.fsm.setAuto(false);
+  b.sim.now = 0xFFFFFFFFu - 20000;  // the dose crosses the wrap
+  b.run(1000);
+  b.tick(true);
+  CHECK(b.fsm.dosing());
+  b.run(60000);
+  CHECK(!b.fsm.dosing());
+  CHECK(b.fsm.alarm() == feeder::Alarm::None);
+  CHECK(b.sim.rotorUs == ROT_STOP);
+  b.tick(false, true);
+  CHECK(b.light > 0);
+  b.run(MOTION_LIGHT_MS + 100, false);
+  CHECK(b.light == 0);
+}
+
+static void testMotionLightAfterLongAuto() {
+  std::printf("fsm: the motion light still turns off after weeks in auto mode\n");
+  Bench b;
+  b.fsm.setAuto(false);
+  b.run(3000);
+  b.tick(false, true);       // motion: light on, off-deadline armed
+  b.fsm.setAuto(true);       // auto takes over before that deadline is polled
+  b.sim.now += 0x80000000u;  // ~24.8 days later
+  b.fsm.setAuto(false);
+  b.tick(false, true);
+  b.run(MOTION_LIGHT_MS + 100, false);
+  CHECK(b.light == 0);
+}
+
+static void testSlowFlowIsNotAJam() {
+  std::printf("fsm: a slow hopper raises 'slow flow', not 'no food'\n");
+  Bench b;
+  b.fsm.setAuto(false);
+  b.sim.rate = 0.2f;  // too slow for a normal cycle, so it climbs the ladder and trickles until the timeout
+  b.run(3000);
+  b.tick(true);
+  b.run(DOSE_TIMEOUT + 5000);
+  CHECK(!b.fsm.dosing());
+  CHECK(b.fsm.alarm() == feeder::Alarm::SlowFlow);
+  CHECK(b.indicator == feeder::Indicator::Blink);
+}
+
+static void testEmptyHopperWithAPawIsNoFood() {
+  std::printf("fsm: an empty hopper that hits the timeout is 'no food', not 'slow flow'\n");
+  // nothing flows; the door takes 1.7 s and a paw sits on the tray at 30-32.5 s, which slows
+  // the jam ladder just enough that the 90 s timeout ends the dose, with 0 g dispensed
+  Bench b;
+  b.fsm.setAuto(false);
+  b.sim.rate = 0;
+  b.run(3000);
+  uint32_t t0 = b.sim.now, doorUntil = 0;
+  b.tick(true);
+  for (int i = 0; i < 20000 && b.fsm.dosing(); i++) {
+    uint32_t t = b.sim.now - t0;
+    if (t == 30000) b.sim.grams += 8;
+    if (t == 32500) b.sim.grams -= 8;
+    b.doorMoving = doorUntil && b.sim.now < doorUntil;
+    bool wasClosed = b.doorClosed;
+    b.tick();
+    if (wasClosed && !b.doorClosed) doorUntil = b.sim.now + 1700;
+  }
+  CHECK(b.log.find("TIMEOUT") != std::string::npos);  // the scenario really reaches the timeout
+  CHECK(b.fsm.alarm() == feeder::Alarm::NoFood);
+
+  // the same with a light 3 g paw that lands at 86 s and is still there at the timeout
+  Bench c;
+  c.fsm.setAuto(false);
+  c.sim.rate = 0;
+  c.run(3000);
+  t0 = c.sim.now;
+  doorUntil = 0;
+  c.tick(true);
+  for (int i = 0; i < 20000 && c.fsm.dosing(); i++) {
+    uint32_t t = c.sim.now - t0;
+    if (t == 30000) c.sim.grams += 8;
+    if (t == 32500) c.sim.grams -= 8;
+    if (t == 86000) c.sim.grams += 3;
+    c.doorMoving = doorUntil && c.sim.now < doorUntil;
+    bool wasClosed = c.doorClosed;
+    c.tick();
+    if (wasClosed && !c.doorClosed) doorUntil = c.sim.now + 1700;
+  }
+  CHECK(c.log.find("TIMEOUT") != std::string::npos);
+  CHECK(c.fsm.alarm() == feeder::Alarm::NoFood);
+}
+
+static void testAbortStopsAtOnce() {
+  std::printf("fsm: abort drops a dose and an auto pulse at once\n");
+  Bench b;
+  b.fsm.setAuto(false);
+  b.run(3000);
+  b.tick(true);
+  b.run(2000);
+  CHECK(b.fsm.dosing());
+  b.fsm.abort();
+  feeder::Outputs o = b.tick();
+  CHECK(!b.fsm.dosing());
+  CHECK(o.rotorUs == -1 || o.rotorUs == ROT_STOP);
+  Bench a;
+  a.fsm.setAuto(true);
+  a.run(3000);
+  a.tick(false, true);
+  CHECK(a.sim.rotorUs == ROT_FWD);
+  a.fsm.abort();
+  a.run(100, true);
+  CHECK(a.tick(false, true).rotorUs != ROT_FWD);
+}
+
+// random presses, motion and door timing: the FSM must keep the rotor and door safe
+static void testRandomizedFsm() {
+  const int RUNS = 2000;
+  std::printf("randomized fsm: %d runs\n", RUNS);
+  for (int seed = 1; seed <= RUNS; seed++) {
+    Lcg rnd(seed);
+    Bench b;
+    b.fsm.setAuto(rnd.chance(0.5f));
+    b.sim.rate = rnd.chance(0.2f) ? 0 : rnd.uniform(0.2f, 5);
+    if (rnd.chance(0.2f)) b.sim.deadFrom = (uint32_t)rnd.uniform(0, 60000);
+    b.sim.now = rnd.chance(0.3f) ? 0xFFFFFFFFu - (uint32_t)rnd.uniform(0, 100000) : 0;
+    uint32_t sameSince = b.sim.now, longest = 0;
+    int lastUs = ROT_STOP;
+    bool ok = true, pir = false;
+    auto expect = [&](bool cond, const char* what) {  // one check per run, not per tick
+      if (!cond && ok) {
+        failures++;
+        ok = false;
+        std::printf("  FAIL seed %d: %s\n", seed, what);
+      }
+    };
+    for (int i = 0; i < 30000; i++) {  // 300 s
+      if (rnd.chance(0.002f)) pir = !pir;
+      b.doorMoving = rnd.chance(0.01f);
+      bool press = rnd.chance(0.0005f);
+      bool wasDosing = b.fsm.dosing();
+      feeder::Outputs o = b.tick(press, pir);
+      if (b.sim.rotorUs != lastUs) {
+        lastUs = b.sim.rotorUs;
+        sameSince = b.sim.now;
+      } else if (lastUs != ROT_STOP && b.sim.now - sameSince > longest) {
+        longest = b.sim.now - sameSince;
+      }
+      expect(o.log.count < Messages::MAX, "a step filled the log buffer");
+      expect(!(wasDosing && !b.fsm.dosing() && o.rotorUs != ROT_STOP), "a dose ended with the rotor running");
+      expect(b.fsm.dosing() || !b.fsm.catOnTray(), "cat on tray reported outside a dose");
+    }
+    for (uint32_t t = 0; t < DOSE_TIMEOUT + 10000 && b.fsm.dosing(); t += CONTROL_TICK_MS)
+      b.tick();  // let a dose started late run to its end
+    expect(!b.fsm.dosing(), "a dose outlived its timeout");
+    b.run(AUTO_PULSE_MS + 100);  // no dose, no motion: whatever ran must stop on its own
+    expect(b.sim.rotorUs == ROT_STOP, "rotor left running with nothing to do");
+    expect(longest <= ROTOR_MAX_RUN_MS, "one rotor command ran longer than the driver cap");
+    checks++;
+  }
+}
+
 static void testHealthWords() {
   std::printf("health words: bits, names, critical mask\n");
   uint16_t f = Fault::ScaleLost | Fault::RotorTripped;
@@ -625,11 +796,12 @@ static void testHealthWords() {
   CHECK(CRITICAL_FAULTS & mask(Fault::NoFood));
   CHECK(!(CRITICAL_FAULTS & mask(Fault::WifiDown)));  // no Wi-Fi is not a reason to blink
   CHECK(!(CRITICAL_FAULTS & mask(Fault::GroveOffline)));
-  for (int i = 0; i <= 9; i++)
-    CHECK(faultName(i) != nullptr);
-  for (int i = 0; i <= 8; i++)
-    CHECK(stateName(i) != nullptr);
-  CHECK(faultName(15) == nullptr);
+  for (int i = 0; i < 16; i++) {  // every bit in use has a name, and no name points at an unused bit
+    CHECK((faultName(i) != nullptr) == (i < FAULT_BITS));
+    CHECK((stateName(i) != nullptr) == (i < STATE_BITS));
+  }
+  CHECK(faultName(-1) == nullptr && faultName(16) == nullptr);
+  CHECK(CRITICAL_FAULTS & mask(Fault::DoseTimeout));
   CHECK(std::string(faultName(1)) == "ScaleLost");
 }
 
@@ -649,6 +821,7 @@ int main() {
   testDoseAcrossTheMillisWrap();
   testKnockDuringShakeKeepsTheDoor();
   testCatUntilTimeout();
+  testScaleDiesAtTheTimeout();
   testRandomizedDoses();
   testButtonDoseThenClose();
   testButtonCancels();
@@ -660,6 +833,12 @@ int main() {
   testPirIgnoredWhileDosing();
   testPressWhileDoorMoves();
   testFsmLongUptime();
+  testFsmNearTheFullWrap();
+  testMotionLightAfterLongAuto();
+  testSlowFlowIsNotAJam();
+  testEmptyHopperWithAPawIsNoFood();
+  testAbortStopsAtOnce();
+  testRandomizedFsm();
   testHealthWords();
   std::printf("\n%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

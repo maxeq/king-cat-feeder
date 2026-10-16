@@ -16,10 +16,15 @@ bad() { echo "FAIL"; [ -n "${1:-}" ] && echo "$1" | tail -20 | sed 's/^/    /'; 
 FW=firmware/king_board
 step "format (C++)"
 if [ -z "$CLANG_FORMAT" ]; then echo "skipped: run scripts/setup-dev.sh"; else
-  out=$(cd $FW && { find src test -name '*.h' -o -name '*.cpp' | grep -v pages.h | xargs "$CLANG_FORMAT" --dry-run -Werror 2>&1
+  out=$(cd $FW && { find src test -name '*.h' -o -name '*.cpp' | grep -v -e pages.h -e /sscma/ | xargs "$CLANG_FORMAT" --dry-run -Werror 2>&1
         "$CLANG_FORMAT" --assume-filename=king_board.cpp --dry-run -Werror < king_board.ino 2>&1; })
   [ -z "$out" ] && ok || bad "$out"
 fi
+
+step "one log"  # every line goes through core/log: it reaches /log and telnet, not only USB
+out=$(grep -rn "Serial\.print" $FW/src $FW/king_board.ino | grep -v -e /sscma/ -e src/core/log.cpp -e "serial-only")
+[ -z "$out" ] && ok || bad "print through say()/sayf()/warnf()/errorf(), or mark a USB-only line // serial-only:
+$out"
 
 step "web bundle"
 out=$(python3 $FW/web/build.py --check 2>&1) && ok || bad "$out"
@@ -28,7 +33,27 @@ step "logic tests"
 bin=$(mktemp -t king_logic.XXXXXX)
 if out=$(g++ -std=c++17 -O2 -Wall -Wextra -Werror -I $FW/src $FW/test/test_logic.cpp $FW/src/logic/*.cpp -o "$bin" 2>&1) &&
    out=$("$bin" 2>&1); then echo "ok ($(echo "$out" | tail -1))"; else bad "$out"; fi
+
+step "control tests"
+if out=$(g++ -std=c++17 -O2 -Wall -Wextra -Werror -I $FW/src $FW/test/test_control.cpp $FW/src/app/controller.cpp \
+           $FW/src/logic/*.cpp -o "$bin" 2>&1) &&
+   out=$("$bin" 2>&1); then echo "ok ($(echo "$out" | tail -1))"; else bad "$out"; fi
+
+step "driver tests"
+if out=$(g++ -std=c++17 -O2 -Wall -Wextra -Werror -I $FW/test/fakes -I $FW/src $FW/test/test_drivers.cpp \
+           $FW/test/fakes/fake_board.cpp $FW/src/drivers/servos.cpp $FW/src/drivers/button.cpp \
+           $FW/src/drivers/scale.cpp $FW/src/drivers/light.cpp $FW/src/drivers/pir.cpp -o "$bin" 2>&1) &&
+   out=$("$bin" 2>&1); then echo "ok ($(echo "$out" | tail -1))"; else bad "$out"; fi
 rm -f "$bin"
+
+step "static analysis"
+CLANG_TIDY=$(tool clang-tidy)
+if [ -z "$CLANG_TIDY" ]; then echo "skipped: run scripts/setup-dev.sh"; else
+  sys=(); [ "$(uname)" = Darwin ] && sys=(-isysroot "$(xcrun --show-sdk-path)")
+  out=$(cd $FW && for f in src/logic/*.cpp src/app/controller.cpp; do
+          "$CLANG_TIDY" --quiet "$f" -- -std=c++17 -I src "${sys[@]}" 2>&1 | grep -E "(error|warning):" ; done)
+  [ -z "$out" ] && ok || bad "$out"
+fi
 
 step "python lint"
 if [ -z "$RUFF" ]; then echo "skipped: run scripts/setup-dev.sh"; else
@@ -45,7 +70,7 @@ if [ "${1:-}" = "--build" ]; then
   [ -f $FW/secrets.h ] || { cp $FW/secrets.h.example $FW/secrets.h; created=1; }
   out=$(cd $FW && arduino-cli compile --profile king_board --warnings all --no-color . 2>&1); rc=$?
   [ $created = 1 ] && rm -f $FW/secrets.h
-  warn=$(echo "$out" | grep -E "king_board/(src|king_board)[^:]*:[0-9]+:[0-9]+: (warning|error)")
+  warn=$(echo "$out" | grep -E "king_board/(src|king_board)[^:]*:[0-9]+:[0-9]+: (warning|error)" | grep -v /sscma/)
   if [ $rc -ne 0 ]; then bad "$out"; elif [ -n "$warn" ]; then bad "$warn"; else echo "ok ($(echo "$out" | grep -o 'Sketch uses [0-9]* bytes ([0-9]*%)'))"; fi
 fi
 

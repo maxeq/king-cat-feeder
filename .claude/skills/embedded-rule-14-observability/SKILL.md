@@ -15,7 +15,7 @@ description: Audit embedded C++ rule 14 on the King board firmware: the board ex
 - Reset reason: `resetReason()` logged at boot (`king_board.ino`).
 - Health words: `/health`, `/status` and the console (`src/logic/health.h`, `src/net/report.*`).
 - Margins: heap free and largest block, tick max and overruns. Check whether stack high-water marks are reported (`uxTaskGetStackHighWaterMark`).
-- Logs: the ring buffer at `/log`, telnet mirror, and log lines never lost silently (queue size in `src/core/log.cpp`).
+- Logs: the ring buffer at `/log`, telnet mirror, and log lines never lost silently (queue size in `src/core/log.cpp`). Every line goes through `src/core/log.*`: `grep -rn 'Serial.print' firmware/king_board/src firmware/king_board/king_board.ino` finds only `core/log.cpp`, the vendored `sscma/`, and lines marked `// serial-only:`. Failures use `warnf`/`errorf`, counted in `/health` (`warnings`, `errors`).
 
 ## Verdict
 
